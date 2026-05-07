@@ -5960,6 +5960,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindSettingsValidators();
   bindAutoFillSuggestions();
   bindSoundToggle();
+  bindSoundPreviewButtons();
   Diagnostics.bind();
   Notifications.bind();
   RunHistory.bind();
