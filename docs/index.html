@@ -123,6 +123,41 @@
           >GitHub</a
         >
         <button
+          id="theme-toggle"
+          aria-label="Переключить тему"
+          title="Переключить тему"
+          class="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-sm text-slate-300 hover:bg-white/10"
+        >
+          🌙
+        </button>
+        <button
+          id="open-help"
+          aria-label="Помощь"
+          title="Шорткаты и подсказки (Ctrl+/)"
+          class="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+        >
+          <span class="sm:hidden">❓</span>
+          <span class="hidden sm:inline">Помощь</span>
+        </button>
+        <button
+          id="open-queue"
+          aria-label="Очередь забросов"
+          title="Очередь забросов"
+          class="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+        >
+          <span class="sm:hidden">📥</span>
+          <span class="hidden sm:inline">Очередь</span>
+        </button>
+        <button
+          id="open-history"
+          aria-label="История запусков"
+          title="История запусков"
+          class="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+        >
+          <span class="sm:hidden">📜</span>
+          <span class="hidden sm:inline">История</span>
+        </button>
+        <button
           id="diag-btn"
           aria-label="Диагностика"
           title="Диагностика и кеш"
@@ -318,6 +353,34 @@
             />
           </label>
 
+          <div class="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-white/5 bg-ink-900/40 p-2">
+            <label class="flex flex-1 items-center gap-2 text-xs text-slate-400">
+              <span class="shrink-0 uppercase tracking-wider">Пресет</span>
+              <select
+                id="preset-select"
+                class="grow rounded-lg border border-white/10 bg-ink-900 px-2 py-1.5 text-xs text-slate-100 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              >
+                <option value="">— Пресет —</option>
+              </select>
+            </label>
+            <button
+              id="preset-save"
+              type="button"
+              title="Сохранить текущие поля как пресет"
+              class="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+            >
+              + Сохранить
+            </button>
+            <button
+              id="preset-manage"
+              type="button"
+              title="Управлять пресетами"
+              class="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+            >
+              Управлять
+            </button>
+          </div>
+
           <div class="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p id="form-error" class="text-sm text-rose-300/90"></p>
             <button
@@ -338,6 +401,45 @@
           Сначала укажи репозиторий на GitHub и токен в
           <button class="underline" id="setup-hint-link">Настройках</button>.
         </p>
+      </section>
+
+      <section class="mt-12">
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400">
+            Статистика
+          </h2>
+          <span class="text-xs text-slate-500">из локальной истории</span>
+        </div>
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div class="stats-card">
+            <span class="stats-key">Всего</span>
+            <span id="stats-total" class="stats-val">—</span>
+          </div>
+          <div class="stats-card">
+            <span class="stats-key">Успехов</span>
+            <span id="stats-success" class="stats-val text-emerald-300">—</span>
+          </div>
+          <div class="stats-card">
+            <span class="stats-key">Ошибок</span>
+            <span id="stats-failure" class="stats-val text-rose-300">—</span>
+          </div>
+          <div class="stats-card">
+            <span class="stats-key">Успешность</span>
+            <span id="stats-rate" class="stats-val text-amber-200">—</span>
+          </div>
+          <div class="stats-card">
+            <span class="stats-key">За сутки</span>
+            <span id="stats-day" class="stats-val">—</span>
+          </div>
+          <div class="stats-card">
+            <span class="stats-key">За неделю</span>
+            <span id="stats-week" class="stats-val">—</span>
+          </div>
+          <div class="stats-card col-span-2">
+            <span class="stats-key">Среднее время заброса</span>
+            <span id="stats-duration" class="stats-val">—</span>
+          </div>
+        </div>
       </section>
 
       <section class="mt-12">
@@ -623,6 +725,128 @@
 
         <details class="mt-3 rounded-xl border border-white/10 bg-ink-900/60 p-4">
           <summary class="cursor-pointer select-none text-sm font-medium text-slate-200">
+            Внешний вид и уведомления
+            <span class="ml-1 block text-xs font-normal text-slate-500">
+              Тема, звук, push-уведомления — все настройки локальные.
+            </span>
+          </summary>
+          <div class="mt-3 space-y-4">
+            <div>
+              <span class="block text-xs font-medium uppercase tracking-wider text-slate-400">Тема</span>
+              <div class="mt-2 inline-flex flex-wrap gap-1 rounded-xl border border-white/10 bg-ink-900 p-1">
+                <button
+                  type="button"
+                  data-theme-set="auto"
+                  class="theme-btn rounded-lg px-3 py-1.5 text-xs text-slate-300 hover:bg-white/5"
+                >
+                  Авто
+                </button>
+                <button
+                  type="button"
+                  data-theme-set="dark"
+                  class="theme-btn rounded-lg px-3 py-1.5 text-xs text-slate-300 hover:bg-white/5"
+                >
+                  Тёмная
+                </button>
+                <button
+                  type="button"
+                  data-theme-set="light"
+                  class="theme-btn rounded-lg px-3 py-1.5 text-xs text-slate-300 hover:bg-white/5"
+                >
+                  Светлая
+                </button>
+              </div>
+              <p class="mt-1 text-[11px] text-slate-500">
+                «Авто» подстраивается под системную тему. Ярлык наверху быстро переключает тёмную/светлую.
+              </p>
+            </div>
+
+            <div>
+              <span class="block text-xs font-medium uppercase tracking-wider text-slate-400">Уведомления браузера</span>
+              <div class="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  id="notify-enable"
+                  type="button"
+                  class="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/20"
+                >
+                  Включить
+                </button>
+                <button
+                  id="notify-disable"
+                  type="button"
+                  class="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+                >
+                  Выключить
+                </button>
+                <span id="notify-status" class="text-xs text-slate-400">выключены</span>
+              </div>
+              <p class="mt-1 text-[11px] text-slate-500">
+                Когда заброс заканчивается, браузер пиликнет, даже если вкладка свёрнута.
+              </p>
+            </div>
+
+            <div>
+              <span class="block text-xs font-medium uppercase tracking-wider text-slate-400">Звук завершения</span>
+              <label class="mt-2 inline-flex items-center gap-2 text-xs text-slate-200">
+                <input
+                  id="sound-toggle"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-white/20 bg-ink-900 text-accent-500 focus:ring-accent-500/50"
+                />
+                Играть «дзинь» при успехе и «жжж» при ошибке
+              </label>
+            </div>
+          </div>
+        </details>
+
+        <details class="mt-3 rounded-xl border border-white/10 bg-ink-900/60 p-4">
+          <summary class="cursor-pointer select-none text-sm font-medium text-slate-200">
+            Резервная копия настроек
+            <span class="ml-1 block text-xs font-normal text-slate-500">
+              JSON-дамп всего, кроме токена. Удобно для перетаскивания между браузерами.
+            </span>
+          </summary>
+          <div class="mt-3 space-y-3">
+            <p class="text-xs text-slate-400">
+              Дамп содержит репо, ID папки Drive, пресеты, тему и список «недавних».
+              <strong class="text-slate-200">Токен и Service Account JSON</strong> в файл
+              <strong class="text-rose-300">не попадают</strong> — их по-прежнему нужно
+              задать вручную.
+            </p>
+            <div class="grid grid-cols-2 gap-2">
+              <button
+                id="cfg-export"
+                type="button"
+                class="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/10"
+              >
+                Скачать .json
+              </button>
+              <button
+                id="cfg-export-clipboard"
+                type="button"
+                class="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/10"
+              >
+                Скопировать в буфер
+              </button>
+              <button
+                id="cfg-import"
+                type="button"
+                class="col-span-2 rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-200 hover:bg-emerald-500/20"
+              >
+                Загрузить из файла…
+              </button>
+              <input
+                id="cfg-import-file"
+                type="file"
+                accept="application/json,.json"
+                class="hidden"
+              />
+            </div>
+          </div>
+        </details>
+
+        <details class="mt-3 rounded-xl border border-white/10 bg-ink-900/60 p-4">
+          <summary class="cursor-pointer select-none text-sm font-medium text-slate-200">
             Логины трекеров (для поиска)
             <span class="ml-1 block text-xs font-normal text-slate-500">
               Без логина доступен только Pirate Bay. Остальные трекеры требуют учётку — оставь пустым то, чем не пользуешься.
@@ -880,6 +1104,309 @@
               <li class="text-slate-500">Пока чисто.</li>
             </ul>
           </details>
+        </div>
+      </div>
+    </div>
+
+    <!-- History dialog -->
+    <div
+      id="history-dialog"
+      class="fixed inset-0 z-50 hidden overflow-y-auto overscroll-contain bg-black/60 backdrop-blur"
+    >
+      <div class="flex min-h-full items-start justify-center p-4 sm:items-center sm:p-6">
+        <div class="glass my-4 w-full max-w-3xl rounded-2xl border border-white/10 bg-ink-800/95 p-6 shadow-2xl">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="text-lg font-semibold">История запусков</h3>
+              <p class="mt-1 text-xs text-slate-400">
+                Локальный список (localStorage). Хранит до 200 забросов с
+                инпутами, чтобы можно было одним кликом перезапустить.
+              </p>
+            </div>
+            <button
+              id="history-close"
+              class="ml-2 shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-white/5"
+              aria-label="Закрыть"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div class="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr,auto,auto,auto]">
+            <input
+              id="history-search"
+              type="search"
+              placeholder="Поиск по URL, файлу, папке…"
+              class="rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+            />
+            <select
+              id="history-filter"
+              class="rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+            >
+              <option value="all">Все</option>
+              <option value="success">Успешные</option>
+              <option value="failure">С ошибкой</option>
+              <option value="in_progress">Идут сейчас</option>
+              <option value="pending">Ожидают</option>
+            </select>
+            <button
+              id="history-export"
+              type="button"
+              class="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/10"
+            >
+              Экспорт JSON
+            </button>
+            <button
+              id="history-clear"
+              type="button"
+              class="rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-200 hover:bg-rose-500/20"
+            >
+              Очистить
+            </button>
+          </div>
+
+          <div class="mt-3 flex items-center justify-between gap-2 text-xs text-slate-400">
+            <span>Записей: <span id="history-count" class="font-mono text-slate-200">0</span></span>
+            <span class="text-[11px] text-slate-500">
+              Подсказка: Tab по строке — фокус на первой кнопке. Re-beam подставляет URL в форму.
+            </span>
+          </div>
+
+          <ul id="history-list" class="mt-3 max-h-[60vh] space-y-2 overflow-auto pr-1"></ul>
+
+          <p
+            id="history-empty"
+            class="mt-6 text-center text-sm text-slate-500"
+          >
+            Пока ничего не было. Запусти первый заброс — он появится здесь.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bulk queue dialog -->
+    <div
+      id="queue-dialog"
+      class="fixed inset-0 z-50 hidden overflow-y-auto overscroll-contain bg-black/60 backdrop-blur"
+    >
+      <div class="flex min-h-full items-start justify-center p-4 sm:items-center sm:p-6">
+        <div class="glass my-4 w-full max-w-2xl rounded-2xl border border-white/10 bg-ink-800/95 p-6 shadow-2xl">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="text-lg font-semibold">Очередь забросов</h3>
+              <p class="mt-1 text-xs text-slate-400">
+                Вставь много URL — по одной строке. Опционально через
+                <code class="rounded bg-ink-900 px-1 text-[10px]">|</code> можно
+                задать имя файла, папку и качество.
+              </p>
+            </div>
+            <button
+              id="queue-close"
+              class="ml-2 shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-white/5"
+              aria-label="Закрыть"
+            >
+              ✕
+            </button>
+          </div>
+
+          <label class="mt-4 block">
+            <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Список URL</span>
+            <textarea
+              id="queue-input"
+              rows="6"
+              placeholder="https://www.youtube.com/watch?v=...&#10;magnet:?xt=urn:btih:...&#10;https://example.com/file.mp4 | моё-кино | Фильмы/2026 | 1080p"
+              class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 font-mono text-xs focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+            ></textarea>
+          </label>
+
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              id="queue-import"
+              type="button"
+              class="rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-200 hover:bg-emerald-500/20"
+            >
+              Добавить в очередь
+            </button>
+            <label class="ml-auto flex items-center gap-2 text-xs text-slate-400">
+              <span>Параллельность</span>
+              <select
+                id="queue-concurrency"
+                class="rounded-lg border border-white/10 bg-ink-900 px-2 py-1 text-xs focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              >
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="mt-4 flex items-center justify-between gap-2 rounded-xl border border-white/10 bg-ink-900/40 px-3 py-2 text-xs text-slate-300">
+            <span>Состояние: <span id="queue-counter" class="font-mono">пусто</span></span>
+            <div class="flex items-center gap-2">
+              <button
+                id="queue-start"
+                type="button"
+                disabled
+                class="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Запустить
+              </button>
+              <button
+                id="queue-abort"
+                type="button"
+                disabled
+                class="rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Стоп
+              </button>
+              <button
+                id="queue-clear-done"
+                type="button"
+                class="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+              >
+                Чистить готовые
+              </button>
+              <button
+                id="queue-clear-all"
+                type="button"
+                class="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+              >
+                Сбросить
+              </button>
+            </div>
+          </div>
+
+          <ul id="queue-list" class="mt-3 max-h-[50vh] space-y-2 overflow-auto pr-1"></ul>
+          <p id="queue-empty" class="mt-4 text-center text-sm text-slate-500">
+            Очередь пуста. Вставь URL выше и нажми «Добавить в очередь».
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Preset manager dialog -->
+    <div
+      id="preset-dialog"
+      class="fixed inset-0 z-50 hidden overflow-y-auto overscroll-contain bg-black/60 backdrop-blur"
+    >
+      <div class="flex min-h-full items-start justify-center p-4 sm:items-center sm:p-6">
+        <div class="glass my-4 w-full max-w-xl rounded-2xl border border-white/10 bg-ink-800/95 p-6 shadow-2xl">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="text-lg font-semibold">Пресеты</h3>
+              <p class="mt-1 text-xs text-slate-400">
+                Сохранённые комбинации полей формы. Применяются одним кликом
+                и переезжают вместе с тобой через Drive-синк.
+              </p>
+            </div>
+            <button
+              id="preset-close"
+              class="ml-2 shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-white/5"
+              aria-label="Закрыть"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div id="preset-list" class="mt-4 space-y-2"></div>
+          <p id="preset-empty" class="mt-4 text-center text-sm text-slate-500">
+            Нет пресетов. Заполни форму и нажми «+ Сохранить» рядом с
+            селектором — пресет появится здесь.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Help dialog -->
+    <div
+      id="help-dialog"
+      class="fixed inset-0 z-50 hidden overflow-y-auto overscroll-contain bg-black/60 backdrop-blur"
+    >
+      <div class="flex min-h-full items-start justify-center p-4 sm:items-center sm:p-6">
+        <div class="glass my-4 w-full max-w-2xl rounded-2xl border border-white/10 bg-ink-800/95 p-6 shadow-2xl">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="text-lg font-semibold">Помощь и шорткаты</h3>
+              <p class="mt-1 text-xs text-slate-400">
+                Краткий гайд по «нестандартным» функциям и набор хоткеев,
+                чтобы быстрее управляться с приложением.
+              </p>
+            </div>
+            <button
+              id="help-close"
+              class="ml-2 shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-white/5"
+              aria-label="Закрыть"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div class="mt-5 grid gap-4 sm:grid-cols-2">
+            <div class="help-card">
+              <h4 class="help-card-title">Шорткаты</h4>
+              <ul class="help-list">
+                <li><kbd>Ctrl</kbd>+<kbd>K</kbd> — фокус на поле URL</li>
+                <li><kbd>Ctrl</kbd>+<kbd>,</kbd> — открыть Настройки</li>
+                <li><kbd>Ctrl</kbd>+<kbd>/</kbd> — открыть Помощь</li>
+                <li><kbd>Ctrl</kbd>+<kbd>D</kbd> — Диагностика</li>
+                <li><kbd>Ctrl</kbd>+<kbd>H</kbd> — История</li>
+                <li><kbd>Ctrl</kbd>+<kbd>Q</kbd> — Очередь</li>
+                <li><kbd>Ctrl</kbd>+<kbd>P</kbd> — Пресеты</li>
+                <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> — переключить тему</li>
+                <li><kbd>Esc</kbd> — закрыть текущий диалог</li>
+                <li><kbd>Enter</kbd> в URL → отправка формы</li>
+              </ul>
+            </div>
+
+            <div class="help-card">
+              <h4 class="help-card-title">URL-форматы</h4>
+              <ul class="help-list">
+                <li>YouTube/Rutube/TikTok — yt-dlp</li>
+                <li><code>magnet:?xt=urn:btih:…</code> — aria2c</li>
+                <li>Прямой <code>.mp4</code>/<code>.mkv</code> — aria2c</li>
+                <li>RuTracker / Kinozal / NNM — нужен логин в Настройках</li>
+                <li>Кинопоиск не качаем — у них нет видео</li>
+              </ul>
+            </div>
+
+            <div class="help-card">
+              <h4 class="help-card-title">Проблемы и починки</h4>
+              <ul class="help-list">
+                <li>Старая версия после обновления — кнопка «Обновить сейчас» в баннере или Диагностика → «Очистить кеш»</li>
+                <li>Прогресс не движется — открой ту же ссылку в Диагностике, проверь GitHub API и Secrets</li>
+                <li>Drive говорит 404 — Folder ID неверный или сервис-аккаунту не выдан доступ</li>
+                <li>YouTube ругается на bot — настрой YT cookies в Настройках</li>
+                <li>RuTracker молчит — логин/пароль в Настройках, оба в формате UTF-8</li>
+              </ul>
+            </div>
+
+            <div class="help-card">
+              <h4 class="help-card-title">Полезные ссылки</h4>
+              <ul class="help-list">
+                <li>
+                  <a href="https://github.com/yt-dlp/yt-dlp#format-selection" target="_blank" rel="noreferrer noopener" class="help-link">yt-dlp format selection</a>
+                </li>
+                <li>
+                  <a href="https://aria2.github.io/manual/en/html/aria2c.html" target="_blank" rel="noreferrer noopener" class="help-link">aria2c manual</a>
+                </li>
+                <li>
+                  <a href="https://docs.github.com/en/actions/security-guides/encrypted-secrets" target="_blank" rel="noreferrer noopener" class="help-link">GitHub Encrypted Secrets</a>
+                </li>
+                <li>
+                  <a href="https://developers.google.com/identity/protocols/oauth2/service-account" target="_blank" rel="noreferrer noopener" class="help-link">Google Service Account</a>
+                </li>
+              </ul>
+            </div>
+
+            <div class="help-card sm:col-span-2">
+              <h4 class="help-card-title">Очередь — формат каждой строки</h4>
+              <pre class="help-code">URL [ | имя_файла [ | подпапка [ | качество ] ] ]</pre>
+              <p class="text-[11px] text-slate-500">
+                Поля разделяются <code>|</code> или табами. Например:
+                <code>https://youtu.be/dQw4w9WgXcQ | rickroll | Музыка | 1080p</code>
+              </p>
+            </div>
+          </div>
         </div>
       </div>
     </div>
