@@ -794,7 +794,42 @@
                   class="h-4 w-4 rounded border-white/20 bg-ink-900 text-accent-500 focus:ring-accent-500/50"
                 />
                 Играть «дзинь» при успехе и «жжж» при ошибке
+                <span
+                  class="sound-help"
+                  title="Это короткие WebAudio-сигналы (около 0.15s каждый). «Дзинь» — успех, «жжж» — ошибка, «чирп» — новый этап. Звуки никуда не отправляются, играются прямо в браузере. Можно потестить ниже."
+                >что это?</span>
               </label>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button
+                  id="sound-test-ding"
+                  type="button"
+                  class="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] text-emerald-200 hover:bg-emerald-500/20"
+                  title="Сигнал успеха"
+                >
+                  ▶ дзинь
+                </button>
+                <button
+                  id="sound-test-buzz"
+                  type="button"
+                  class="rounded-lg border border-rose-400/30 bg-rose-500/10 px-2.5 py-1 text-[11px] text-rose-200 hover:bg-rose-500/20"
+                  title="Сигнал ошибки"
+                >
+                  ▶ жжж
+                </button>
+                <button
+                  id="sound-test-chirp"
+                  type="button"
+                  class="rounded-lg border border-accent-400/30 bg-accent-500/10 px-2.5 py-1 text-[11px] text-accent-300 hover:bg-accent-500/25"
+                  title="Сигнал нового этапа"
+                >
+                  ▶ чирп
+                </button>
+              </div>
+              <p class="mt-1 text-[11px] text-slate-500">
+                Звуки играются в этой вкладке через WebAudio. На мобильных
+                браузерах нужно один раз кликнуть по странице, чтобы аудио
+                разрешили.
+              </p>
             </div>
           </div>
         </details>
@@ -1404,6 +1439,25 @@
               <p class="text-[11px] text-slate-500">
                 Поля разделяются <code>|</code> или табами. Например:
                 <code>https://youtu.be/dQw4w9WgXcQ | rickroll | Музыка | 1080p</code>
+              </p>
+            </div>
+
+            <div class="help-card sm:col-span-2">
+              <h4 class="help-card-title">Что за звуки?</h4>
+              <p class="text-xs text-slate-300">
+                Это короткие WebAudio-сигналы, которые играются прямо в браузере
+                (никуда не отправляются). Помогают замечать события, не глядя в
+                таб. Включаются и выключаются в Настройках → «Звук завершения».
+              </p>
+              <ul class="help-list mt-2">
+                <li><strong>«Дзинь»</strong> (синусоида ~880&nbsp;Hz, 0.18s) — заброс успешно завершился.</li>
+                <li><strong>«Жжж»</strong> (квадратная волна ~140&nbsp;Hz, 0.32s) — заброс упал.</li>
+                <li><strong>«Чирп»</strong> (треугольник ~660&nbsp;Hz, 0.08s) — начался новый этап (загрузка/конвертация/upload).</li>
+              </ul>
+              <p class="mt-2 text-[11px] text-slate-500">
+                На iOS Safari/Chrome звук разрешается только после первого
+                клика по странице. Если звуки не играются — кликни по любой
+                кнопке и попробуй снова.
               </p>
             </div>
           </div>

@@ -784,3 +784,421 @@ html.theme-light .stats-card .stats-val {
     justify-content: flex-end;
   }
 }
+
+/* ============================================================
+   Light theme — comprehensive Tailwind utility overrides.
+   The first round of theme support flipped a handful of CSS
+   variables, but the markup uses dozens of bespoke Tailwind
+   colour utilities (bg-accent-500/10, text-amber-300, …) that
+   never read those variables.  In dark mode this is fine because
+   the palette was tuned around dark.  In light mode it produces
+   the "grey-on-grey, can't read anything" effect the user
+   reported.  This block re-paints every utility we actually use
+   in the markup so light mode stays readable end-to-end.
+   ============================================================ */
+
+/* Page-level surfaces. */
+html.theme-light body,
+html.theme-light .bg-ink-950,
+html.theme-light .bg-ink-950\/80 {
+  background-color: var(--fb-bg) !important;
+  color: var(--fb-text);
+}
+
+/* Slate text scale.  In dark mode 100/200/300 are near-white
+   readable foreground; in light mode they need to drop down to
+   slate-800 to read on the off-white surface.  400/500 are
+   secondary text and chip metadata. */
+html.theme-light .text-slate-100,
+html.theme-light .text-slate-100\/80,
+html.theme-light .text-slate-200,
+html.theme-light .text-slate-200\/80,
+html.theme-light .text-slate-300,
+html.theme-light .text-slate-300\/80 {
+  color: #1e293b !important;
+}
+html.theme-light .text-slate-400,
+html.theme-light .text-slate-400\/80 {
+  color: #475569 !important;
+}
+html.theme-light .text-slate-500,
+html.theme-light .text-slate-500\/80 {
+  color: #64748b !important;
+}
+html.theme-light .placeholder\:text-slate-500::placeholder {
+  color: #94a3b8 !important;
+}
+html.theme-light .hover\:text-slate-300:hover {
+  color: #1e293b !important;
+}
+
+/* ---- Accent (purple/violet) ---- */
+html.theme-light .text-accent-100,
+html.theme-light .text-accent-200,
+html.theme-light .text-accent-300,
+html.theme-light .text-accent-400,
+html.theme-light .text-accent-500 {
+  color: #5b3df0 !important;
+}
+html.theme-light .bg-accent-500\/10 {
+  background-color: rgba(124, 92, 255, 0.1) !important;
+}
+html.theme-light .bg-accent-500\/15 {
+  background-color: rgba(124, 92, 255, 0.18) !important;
+  color: #2d1c80 !important;
+}
+html.theme-light .bg-accent-500\/20 {
+  background-color: rgba(124, 92, 255, 0.22) !important;
+  color: #2d1c80 !important;
+}
+html.theme-light .hover\:bg-accent-500\/25:hover {
+  background-color: rgba(124, 92, 255, 0.28) !important;
+  color: #1d1366 !important;
+}
+html.theme-light .border-accent-400\/30,
+html.theme-light .border-accent-400\/40,
+html.theme-light .border-accent-500\/30,
+html.theme-light .focus\:border-accent-500:focus {
+  border-color: rgba(124, 92, 255, 0.45) !important;
+}
+html.theme-light .selection\:bg-accent-500\/30 ::selection {
+  background-color: rgba(124, 92, 255, 0.32) !important;
+  color: #f8f4ff !important;
+}
+html.theme-light .focus\:ring-accent-500\/30:focus {
+  --tw-ring-color: rgba(124, 92, 255, 0.4);
+}
+html.theme-light .bg-accent-400 {
+  background-color: #6347e6 !important;
+}
+html.theme-light .bg-accent-500 {
+  background-color: #5b3df0 !important;
+  color: #f8f4ff !important;
+}
+html.theme-light .hover\:bg-accent-400:hover {
+  background-color: #6347e6 !important;
+}
+
+/* Brand gradient pill on top of the page (rotating dot etc.) */
+html.theme-light .bg-gradient-to-br.from-accent-500.to-fuchsia-500 {
+  box-shadow: 0 6px 14px rgba(124, 92, 255, 0.25);
+}
+
+/* The "Через гигабитный канал" gradient headline.  In dark mode
+   it's a white-on-dark gradient; in light mode the same gradient
+   on white is faint, so we punch up saturation. */
+html.theme-light .bg-gradient-to-r.from-accent-300,
+html.theme-light .bg-gradient-to-r.from-accent-400 {
+  background-image: linear-gradient(
+    90deg,
+    #5b3df0 0%,
+    #6347e6 40%,
+    #b524d6 100%
+  ) !important;
+}
+
+/* ---- Amber (warnings / hints) ---- */
+html.theme-light .text-amber-100,
+html.theme-light .text-amber-200,
+html.theme-light .text-amber-300,
+html.theme-light .text-amber-300\/90 {
+  color: #b45309 !important;
+}
+html.theme-light .bg-amber-500\/10 {
+  background-color: rgba(245, 158, 11, 0.18) !important;
+}
+html.theme-light .border-amber-300\/30,
+html.theme-light .border-amber-400\/30 {
+  border-color: rgba(245, 158, 11, 0.45) !important;
+}
+html.theme-light .hover\:bg-amber-500\/20:hover {
+  background-color: rgba(245, 158, 11, 0.28) !important;
+}
+
+/* ---- Emerald (success / save / upload) ---- */
+html.theme-light .text-emerald-100,
+html.theme-light .text-emerald-200,
+html.theme-light .text-emerald-200\/80,
+html.theme-light .text-emerald-300,
+html.theme-light .text-emerald-950 {
+  color: #047857 !important;
+}
+html.theme-light .bg-emerald-500\/10 {
+  background-color: rgba(16, 185, 129, 0.18) !important;
+}
+html.theme-light .bg-emerald-500 {
+  background-color: #059669 !important;
+  color: #ffffff !important;
+}
+html.theme-light .hover\:bg-emerald-400:hover,
+html.theme-light .hover\:bg-emerald-500\/20:hover {
+  background-color: rgba(16, 185, 129, 0.28) !important;
+}
+html.theme-light .border-emerald-400\/30 {
+  border-color: rgba(16, 185, 129, 0.45) !important;
+}
+
+/* ---- Rose (errors / destructive) ---- */
+html.theme-light .text-rose-200,
+html.theme-light .text-rose-300,
+html.theme-light .text-rose-300\/90 {
+  color: #be123c !important;
+}
+html.theme-light .bg-rose-500\/10 {
+  background-color: rgba(244, 63, 94, 0.16) !important;
+}
+html.theme-light .border-rose-400\/30 {
+  border-color: rgba(244, 63, 94, 0.45) !important;
+}
+html.theme-light .hover\:bg-rose-500\/20:hover {
+  background-color: rgba(244, 63, 94, 0.26) !important;
+}
+
+/* ---- Surfaces / panels (cards, dialogs, glass) ---- */
+html.theme-light .glass {
+  background-color: rgba(255, 255, 255, 0.85) !important;
+  border-color: rgba(15, 23, 42, 0.1) !important;
+  box-shadow: 0 18px 38px -22px rgba(15, 23, 42, 0.35);
+}
+html.theme-light .bg-white\/5,
+html.theme-light .bg-white\/10 {
+  background-color: rgba(15, 23, 42, 0.04) !important;
+}
+html.theme-light .hover\:bg-white\/5:hover,
+html.theme-light .hover\:bg-white\/10:hover {
+  background-color: rgba(15, 23, 42, 0.08) !important;
+}
+html.theme-light .border-white\/5,
+html.theme-light .border-white\/10,
+html.theme-light .border-white\/20 {
+  border-color: rgba(15, 23, 42, 0.15) !important;
+}
+
+/* Background grid: nearly invisible on white.  Boost contrast a bit
+   so the page still feels like the same product. */
+html.theme-light .bg-grid {
+  opacity: 0.7;
+  background-image:
+    linear-gradient(to right, rgba(15, 23, 42, 0.08) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(15, 23, 42, 0.08) 1px, transparent 1px);
+}
+html.theme-light .glow {
+  filter: blur(80px) saturate(120%);
+  opacity: 0.4;
+}
+
+/* Settings dialog inner panels (Drive section, GitHub section,
+   etc).  These are bg-accent-500/10 with text-amber-300 hints
+   inside, so we bump readability of the inner explanatory text. */
+html.theme-light details > summary {
+  color: #1e293b;
+}
+html.theme-light .bg-accent-500\/10 .text-amber-300,
+html.theme-light .bg-accent-500\/10 .text-amber-300\/90 {
+  color: #92400e !important;
+  font-weight: 500;
+}
+
+/* Dialog scrollbars in light mode — the dark thumb looks unbalanced. */
+html.theme-light #progress-log::-webkit-scrollbar-thumb,
+html.theme-light #diag-errors::-webkit-scrollbar-thumb,
+html.theme-light #history-list::-webkit-scrollbar-thumb,
+html.theme-light #queue-list::-webkit-scrollbar-thumb,
+html.theme-light #preset-list::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.18);
+}
+
+/* ---- Stats / history / queue / preset / help cards in light mode ---- */
+html.theme-light .stats-card,
+html.theme-light .history-row,
+html.theme-light .queue-row,
+html.theme-light .preset-card,
+html.theme-light .help-card {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: rgba(15, 23, 42, 0.1);
+}
+html.theme-light .stats-card .stats-key,
+html.theme-light .history-row .history-meta,
+html.theme-light .queue-row .queue-sub,
+html.theme-light .preset-card .preset-fields,
+html.theme-light .help-list {
+  color: #475569;
+}
+html.theme-light .stats-card .stats-val,
+html.theme-light .history-row .history-title,
+html.theme-light .queue-row .queue-title,
+html.theme-light .preset-card .preset-name,
+html.theme-light .help-card-title {
+  color: #0f172a;
+}
+html.theme-light .history-row:hover {
+  background: rgba(255, 255, 255, 1);
+  border-color: rgba(15, 23, 42, 0.18);
+}
+html.theme-light .history-row .history-meta .chip,
+html.theme-light .preset-card .preset-fields .chip {
+  background: rgba(15, 23, 42, 0.05);
+  border-color: rgba(15, 23, 42, 0.1);
+}
+html.theme-light .history-row .history-actions button,
+html.theme-light .queue-row .queue-actions button,
+html.theme-light .preset-card .preset-actions button {
+  background: rgba(15, 23, 42, 0.05);
+  border-color: rgba(15, 23, 42, 0.12);
+  color: #1e293b;
+}
+html.theme-light .history-row .history-actions button:hover,
+html.theme-light .queue-row .queue-actions button:hover,
+html.theme-light .preset-card .preset-actions button:hover {
+  background: rgba(124, 92, 255, 0.18);
+  color: #1d1366;
+  border-color: rgba(124, 92, 255, 0.45);
+}
+html.theme-light .history-row .history-actions button.danger:hover,
+html.theme-light .preset-card .preset-actions button.danger:hover {
+  background: rgba(244, 63, 94, 0.18);
+  color: #831843;
+  border-color: rgba(244, 63, 94, 0.5);
+}
+
+/* Help dialog kbd and code blocks adapt to light mode. */
+html.theme-light .help-card kbd {
+  color: #1d1366;
+  background: rgba(124, 92, 255, 0.14);
+  border-color: rgba(124, 92, 255, 0.4);
+}
+html.theme-light .help-code {
+  color: #0f172a;
+  background: #f1f5f9;
+  border-color: rgba(15, 23, 42, 0.12);
+}
+html.theme-light .help-link {
+  color: #5b3df0;
+}
+html.theme-light .help-link:hover {
+  color: #3a26b8;
+}
+
+/* Theme toggle button itself stays visible. */
+html.theme-light #theme-toggle {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(15, 23, 42, 0.18);
+  color: #1e293b;
+}
+
+/* Toast in light mode. */
+html.theme-light .toast {
+  background: rgba(255, 255, 255, 0.96) !important;
+  color: #0f172a !important;
+  border-color: rgba(15, 23, 42, 0.12) !important;
+  box-shadow: 0 10px 30px -12px rgba(15, 23, 42, 0.35);
+}
+
+/* Notification status indicator dots — recolour for light bg. */
+html.theme-light #notify-status[data-state="granted"] {
+  color: #047857;
+}
+html.theme-light #notify-status[data-state="denied"] {
+  color: #be123c;
+}
+html.theme-light #notify-status[data-state="default"] {
+  color: #b45309;
+}
+
+/* Settings dialog inputs.  Tailwind doesn't supply a dedicated
+   light-input class, so override the dark utilities outright. */
+html.theme-light input,
+html.theme-light select,
+html.theme-light textarea {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+  border-color: rgba(15, 23, 42, 0.18) !important;
+  color: #0f172a !important;
+}
+html.theme-light input:focus,
+html.theme-light select:focus,
+html.theme-light textarea:focus {
+  border-color: #5b3df0 !important;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(91, 61, 240, 0.18);
+}
+
+/* Disabled buttons should still read in light mode. */
+html.theme-light button:disabled {
+  opacity: 0.55;
+}
+
+/* Recent URL list pills (ink-900 with text-slate-300). */
+html.theme-light #recent-list .recent-pill {
+  background: rgba(15, 23, 42, 0.05);
+  border-color: rgba(15, 23, 42, 0.12);
+  color: #1e293b;
+}
+html.theme-light #recent-list .recent-pill:hover {
+  background: rgba(124, 92, 255, 0.18);
+  color: #1d1366;
+}
+
+/* "Sounds" inline help bubble. */
+.sound-help {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 11px;
+  color: #94a3b8;
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.sound-help:hover {
+  color: #cbd5e1;
+}
+html.theme-light .sound-help {
+  color: #64748b;
+}
+html.theme-light .sound-help:hover {
+  color: #1e293b;
+}
+
+/* The "loading new version" banner uses a dark gradient — make
+   sure the same gradient renders contrasted in both themes. */
+html.theme-light #sw-banner {
+  background: rgba(255, 255, 255, 0.97);
+  color: #0f172a;
+  border: 1px solid rgba(91, 61, 240, 0.4);
+  box-shadow: 0 10px 30px -10px rgba(91, 61, 240, 0.35);
+}
+html.theme-light #sw-banner button {
+  background: #5b3df0;
+  color: #ffffff;
+  border-color: #5b3df0;
+}
+html.theme-light #sw-banner button:hover {
+  background: #4a2ed4;
+}
+
+/* ============================================================
+   Sounds: visual companion to the WebAudio cues.  When a sound
+   plays we briefly flash a 1px outline around the URL form so
+   users on muted devices still get a confirmation pulse.
+   ============================================================ */
+@keyframes sound-pulse-ok {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 12px rgba(34, 197, 94, 0);
+  }
+}
+@keyframes sound-pulse-err {
+  0% {
+    box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.6);
+  }
+  100% {
+    box-shadow: 0 0 0 14px rgba(244, 63, 94, 0);
+  }
+}
+.sound-pulse-ok {
+  animation: sound-pulse-ok 720ms ease-out;
+}
+.sound-pulse-err {
+  animation: sound-pulse-err 820ms ease-out;
+}
