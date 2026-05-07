@@ -340,6 +340,94 @@ function bindSettings() {
   });
 }
 
+// Recognises common URL shapes so we can give the user inline feedback and so
+// the workflow knows whether to pick yt-dlp, aria2-direct or aria2-bittorrent.
+function classifyUrl(raw) {
+  const url = (raw || "").trim();
+  if (!url) return { kind: "empty" };
+  if (/^magnet:\?/i.test(url)) return { kind: "magnet" };
+  if (/\.torrent(\?|$)/i.test(url)) return { kind: "torrent" };
+  if (!/^https?:\/\//i.test(url)) return { kind: "invalid" };
+  let host = "";
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return { kind: "invalid" };
+  }
+  if (/(^|\.)kinopoisk\.ru$/.test(host)) return { kind: "kinopoisk", host };
+  if (
+    /(^|\.)(youtube\.com|youtu\.be|vimeo\.com|tiktok\.com|twitter\.com|x\.com|twitch\.tv|dailymotion\.com|rutube\.ru|vk\.com|bilibili\.com|facebook\.com|instagram\.com|ok\.ru|coub\.com)$/.test(
+      host
+    )
+  ) {
+    return { kind: "video", host };
+  }
+  if (/\.(mp4|mkv|webm|avi|mov|m4v|mp3|m4a|flac|wav|ogg|opus|zip|rar|7z|iso|pdf|epub|cbr|cbz)(\?|$)/i.test(url)) {
+    return { kind: "direct", host };
+  }
+  return { kind: "unknown", host };
+}
+
+const URL_HINTS = {
+  empty: { text: "", cls: "text-slate-400" },
+  invalid: {
+    text: "Ссылка должна начинаться с http(s):// или magnet:?",
+    cls: "text-rose-300",
+  },
+  kinopoisk: {
+    text:
+      "Кинопоиск — это страница описания, видео там нет. Скопируй magnet с RuTracker или ссылку с Rutube/YouTube.",
+    cls: "text-rose-300",
+  },
+  magnet: {
+    text: "Магнет-ссылка — пойдёт через aria2c (BitTorrent).",
+    cls: "text-emerald-300",
+  },
+  torrent: {
+    text: ".torrent файл — пойдёт через aria2c (BitTorrent).",
+    cls: "text-emerald-300",
+  },
+  video: {
+    text: "Похоже на видео-сайт — пойдёт через yt-dlp.",
+    cls: "text-emerald-300",
+  },
+  direct: {
+    text: "Прямая ссылка на файл — пойдёт через aria2c.",
+    cls: "text-emerald-300",
+  },
+  unknown: {
+    text: "Попробую yt-dlp как универсальный извлекатель. Если не выйдет — посмотри лог раннера.",
+    cls: "text-slate-400",
+  },
+};
+
+function bindUrlHint() {
+  const hint = $("#url-hint");
+  const input = $("#url");
+  if (!hint || !input) return;
+  const update = () => {
+    const cls = classifyUrl(input.value).kind;
+    const meta = URL_HINTS[cls] || URL_HINTS.unknown;
+    hint.textContent = meta.text;
+    hint.className = `text-xs ${meta.cls}`;
+  };
+  input.addEventListener("input", update);
+  input.addEventListener("paste", () => setTimeout(update, 0));
+  update();
+}
+
+function bindQualityToggle() {
+  const select = $("#quality");
+  const wrap = $("#ytdlp-format-wrap");
+  if (!select || !wrap) return;
+  const sync = () => {
+    wrap.classList.toggle("hidden", select.value !== "custom");
+    wrap.classList.toggle("block", select.value === "custom");
+  };
+  select.addEventListener("change", sync);
+  sync();
+}
+
 function bindForm() {
   $("#beam-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -352,17 +440,26 @@ function bindForm() {
       return;
     }
 
+    const rawUrl = $("#url").value.trim();
+    const quality = $("#quality").value || "auto";
+    const customFormat = $("#ytdlp_format").value.trim();
     const inputs = {
-      url: $("#url").value.trim(),
+      url: rawUrl,
       filename: $("#filename").value.trim(),
       subfolder: $("#subfolder").value.trim(),
-      mode: $("#mode").value,
-      ytdlp_format: $("#ytdlp_format").value.trim() || "bv*+ba/b",
-      max_size_mb: String(parseInt($("#max_size_mb").value, 10) || 0),
+      quality,
+      ytdlp_format: quality === "custom" ? customFormat || "bv*+ba/b" : "",
     };
 
-    if (!/^https?:\/\//i.test(inputs.url)) {
-      errEl.textContent = "Ссылка должна начинаться с http:// или https://";
+    const cls = classifyUrl(rawUrl).kind;
+    if (cls === "empty" || cls === "invalid") {
+      errEl.textContent =
+        "Ссылка должна начинаться с http(s):// или magnet:?";
+      return;
+    }
+    if (cls === "kinopoisk") {
+      errEl.textContent =
+        "Кинопоиск не хостит видео. Скопируй magnet с RuTracker или ссылку с Rutube/YouTube.";
       return;
     }
 
@@ -709,6 +806,8 @@ document.addEventListener("DOMContentLoaded", () => {
   bindInstall();
   bindPaste();
   bindDriveUpload();
+  bindUrlHint();
+  bindQualityToggle();
   $("#refresh-btn").addEventListener("click", () => refreshRuns(true));
 
   // Pre-fill repo from URL if not configured yet.

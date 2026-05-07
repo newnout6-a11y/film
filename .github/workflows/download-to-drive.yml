@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: "Direct URL or video page to download"
+        description: "URL of the source: video page, direct file, magnet:? or .torrent"
         required: true
         type: string
       filename:
@@ -17,26 +17,23 @@ on:
         required: false
         type: string
         default: ""
-      mode:
-        description: "Downloader: auto | aria2 | ytdlp | curl"
+      quality:
+        description: "Quality preset (yt-dlp only): auto | 1080p | 720p | 480p | audio | custom"
         required: false
         type: choice
         default: "auto"
         options:
           - auto
-          - aria2
-          - ytdlp
-          - curl
+          - 1080p
+          - 720p
+          - 480p
+          - audio
+          - custom
       ytdlp_format:
-        description: "yt-dlp format selector (only for ytdlp/auto-video)"
+        description: "Custom yt-dlp format selector (only used when quality=custom)"
         required: false
         type: string
-        default: "bv*+ba/b"
-      max_size_mb:
-        description: "Abort if file is larger than this (MB). 0 = no limit"
-        required: false
-        type: string
-        default: "0"
+        default: ""
 
 concurrency:
   group: download-${{ github.run_id }}
@@ -50,24 +47,67 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Validate inputs
-        id: validate
+      - name: Validate inputs and detect downloader
+        id: detect
         env:
           INPUT_URL: ${{ inputs.url }}
+          QUALITY: ${{ inputs.quality }}
+          CUSTOM_FORMAT: ${{ inputs.ytdlp_format }}
         run: |
           set -euo pipefail
           url="$INPUT_URL"
-          if ! [[ "$url" =~ ^https?:// ]]; then
-            echo "::error::URL must start with http:// or https://"
+
+          # Accept magnet:?, http(s):// and .torrent URLs.
+          mode=""
+          if [[ "$url" =~ ^magnet:\? ]]; then
+            mode="torrent"
+          elif [[ "$url" =~ ^https?:// ]]; then
+            if [[ "$url" =~ \.torrent($|\?) ]]; then
+              mode="torrent"
+            elif [[ "$url" =~ (youtube\.com|youtu\.be|vimeo\.com|tiktok\.com|twitter\.com|x\.com|twitch\.tv|dailymotion\.com|rutube\.ru|vk\.com|bilibili\.com|facebook\.com|instagram\.com|ok\.ru|coub\.com) ]]; then
+              mode="ytdlp"
+            elif [[ "$url" =~ \.(mp4|mkv|webm|avi|mov|m4v|mp3|m4a|flac|wav|ogg|opus|zip|rar|7z|iso|pdf|epub|cbr|cbz)($|\?) ]]; then
+              mode="aria2"
+            else
+              # Fall back to yt-dlp for unrecognised pages — it knows ~1000 sites.
+              mode="ytdlp"
+            fi
+          else
+            echo "::error::URL must start with http(s):// or magnet:?"
             exit 1
           fi
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-          echo "## Beam request" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- URL: \`$url\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Filename: \`${{ inputs.filename }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Subfolder: \`${{ inputs.subfolder }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Mode: \`${{ inputs.mode }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+          # Map the quality preset into a yt-dlp format string. The aria2 and
+          # torrent paths ignore this — they download whatever's on the wire.
+          format=""
+          extract_audio="false"
+          case "${QUALITY:-auto}" in
+            auto)   format="bv*+ba/b" ;;
+            1080p)  format="bv*[height<=1080]+ba/b[height<=1080]" ;;
+            720p)   format="bv*[height<=720]+ba/b[height<=720]" ;;
+            480p)   format="bv*[height<=480]+ba/b[height<=480]" ;;
+            audio)  format="ba/b"; extract_audio="true" ;;
+            custom) format="${CUSTOM_FORMAT:-bv*+ba/b}" ;;
+            *)      format="bv*+ba/b" ;;
+          esac
+
+          {
+            echo "url=$url"
+            echo "mode=$mode"
+            echo "format=$format"
+            echo "extract_audio=$extract_audio"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Beam request"
+            echo ""
+            echo "- URL: \`$url\`"
+            echo "- Filename: \`${{ inputs.filename }}\`"
+            echo "- Subfolder: \`${{ inputs.subfolder }}\`"
+            echo "- Mode: \`$mode\`"
+            echo "- Quality: \`${QUALITY:-auto}\`"
+            echo "- yt-dlp format: \`$format\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check secrets are configured
         env:
@@ -127,25 +167,6 @@ jobs:
             exit 1
           }
 
-      - name: Detect downloader
-        id: detect
-        env:
-          MODE: ${{ inputs.mode }}
-          URL: ${{ steps.validate.outputs.url }}
-        run: |
-          set -euo pipefail
-          mode="$MODE"
-          if [ "$mode" = "auto" ]; then
-            # Heuristic: video hosting sites -> ytdlp; direct files -> aria2
-            if [[ "$URL" =~ (youtube\.com|youtu\.be|vimeo\.com|tiktok\.com|twitter\.com|x\.com|twitch\.tv|dailymotion\.com|rutube\.ru|vk\.com|bilibili\.com|facebook\.com|instagram\.com) ]]; then
-              mode="ytdlp"
-            else
-              mode="aria2"
-            fi
-          fi
-          echo "mode=$mode" >> "$GITHUB_OUTPUT"
-          echo "Selected downloader: $mode"
-
       - name: Prepare workspace
         id: workspace
         run: |
@@ -154,58 +175,72 @@ jobs:
           mkdir -p "$work"
           echo "dir=$work" >> "$GITHUB_OUTPUT"
 
-      - name: Download with aria2
-        if: steps.detect.outputs.mode == 'aria2' || steps.detect.outputs.mode == 'curl'
+      - name: Download with aria2 (direct)
+        if: steps.detect.outputs.mode == 'aria2'
         env:
-          URL: ${{ steps.validate.outputs.url }}
+          URL: ${{ steps.detect.outputs.url }}
           FILENAME: ${{ inputs.filename }}
-          MAX_SIZE_MB: ${{ inputs.max_size_mb }}
-          MODE: ${{ steps.detect.outputs.mode }}
           WORK: ${{ steps.workspace.outputs.dir }}
         run: |
           set -euo pipefail
           cd "$WORK"
-          # Pre-check size if possible
-          if [ "${MAX_SIZE_MB:-0}" != "0" ]; then
-            size_bytes=$(curl -sIL "$URL" | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1 || true)
-            if [ -n "$size_bytes" ]; then
-              limit_bytes=$(( MAX_SIZE_MB * 1024 * 1024 ))
-              if [ "$size_bytes" -gt "$limit_bytes" ]; then
-                echo "::error::File size ${size_bytes} bytes exceeds limit of ${limit_bytes} bytes (max_size_mb=${MAX_SIZE_MB})."
-                exit 1
-              fi
-              echo "Pre-check size: $size_bytes bytes (limit: $limit_bytes bytes)"
-            fi
-          fi
           out_arg=()
           if [ -n "${FILENAME:-}" ]; then
             out_arg=(-o "$FILENAME")
           fi
-          if [ "$MODE" = "curl" ]; then
-            target="${FILENAME:-download.bin}"
-            curl -fL --retry 5 --retry-delay 2 -o "$target" "$URL"
-          else
-            aria2c \
-              --console-log-level=warn \
-              --summary-interval=10 \
-              --max-connection-per-server=16 \
-              --split=16 \
-              --min-split-size=4M \
-              --continue=true \
-              --auto-file-renaming=false \
-              --allow-overwrite=true \
-              "${out_arg[@]}" \
-              "$URL"
-          fi
+          aria2c \
+            --console-log-level=warn \
+            --summary-interval=10 \
+            --max-connection-per-server=16 \
+            --split=16 \
+            --min-split-size=4M \
+            --continue=true \
+            --auto-file-renaming=false \
+            --allow-overwrite=true \
+            "${out_arg[@]}" \
+            "$URL"
           ls -lah "$WORK"
+
+      - name: Download with aria2 (BitTorrent)
+        if: steps.detect.outputs.mode == 'torrent'
+        env:
+          URL: ${{ steps.detect.outputs.url }}
+          WORK: ${{ steps.workspace.outputs.dir }}
+        run: |
+          set -euo pipefail
+          cd "$WORK"
+          # A modest tracker list helps DHT-only magnets bootstrap faster.
+          trackers="udp://tracker.opentrackr.org:1337/announce,udp://open.demonii.com:1337/announce,udp://open.stealth.si:80/announce,udp://exodus.desync.com:6969/announce,udp://tracker.torrent.eu.org:451/announce,udp://tracker.openbittorrent.com:6969/announce"
+          aria2c \
+            --console-log-level=warn \
+            --summary-interval=15 \
+            --enable-dht=true \
+            --enable-dht6=false \
+            --enable-peer-exchange=true \
+            --bt-enable-lpd=true \
+            --bt-tracker="$trackers" \
+            --bt-save-metadata=true \
+            --bt-stop-timeout=900 \
+            --seed-time=0 \
+            --listen-port=6881-6891 \
+            --dht-listen-port=6881-6891 \
+            --max-connection-per-server=16 \
+            --split=16 \
+            --continue=true \
+            "$URL"
+          # Drop aria2 control files; we don't want them on Drive.
+          find "$WORK" -name '*.aria2' -type f -delete || true
+          # If the torrent was a single file, leave it; if it was a folder,
+          # rclone copy will recurse — both work.
+          ls -lahR "$WORK"
 
       - name: Download with yt-dlp
         if: steps.detect.outputs.mode == 'ytdlp'
         env:
-          URL: ${{ steps.validate.outputs.url }}
+          URL: ${{ steps.detect.outputs.url }}
           FILENAME: ${{ inputs.filename }}
-          FORMAT: ${{ inputs.ytdlp_format }}
-          MAX_SIZE_MB: ${{ inputs.max_size_mb }}
+          FORMAT: ${{ steps.detect.outputs.format }}
+          EXTRACT_AUDIO: ${{ steps.detect.outputs.extract_audio }}
           WORK: ${{ steps.workspace.outputs.dir }}
         run: |
           set -euo pipefail
@@ -215,8 +250,10 @@ jobs:
             out_template="${FILENAME}.%(ext)s"
           fi
           extra=()
-          if [ "${MAX_SIZE_MB:-0}" != "0" ]; then
-            extra+=(--max-filesize "${MAX_SIZE_MB}M")
+          if [ "${EXTRACT_AUDIO:-false}" = "true" ]; then
+            extra+=(--extract-audio --audio-format mp3 --audio-quality 0)
+          else
+            extra+=(--merge-output-format mp4)
           fi
           yt-dlp \
             --no-progress \
@@ -224,7 +261,6 @@ jobs:
             --concurrent-fragments 8 \
             --retries 10 \
             --fragment-retries 10 \
-            --merge-output-format mp4 \
             -f "$FORMAT" \
             -o "$out_template" \
             "${extra[@]}" \
