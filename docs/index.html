@@ -495,6 +495,59 @@
 
         <details class="mt-3 rounded-xl border border-white/10 bg-ink-900/60 p-4">
           <summary class="cursor-pointer select-none text-sm font-medium text-slate-200">
+            Куки YouTube (если упирается в «Sign in to confirm…»)
+            <span class="ml-1 block text-xs font-normal text-slate-500">
+              YouTube блокирует runner GitHub-Actions как бота. Решается экспортом своих куков.
+            </span>
+          </summary>
+          <div class="mt-3 space-y-3">
+            <p class="text-xs text-slate-400">
+              Поставь расширение
+              <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" rel="noopener noreferrer" class="underline decoration-dotted underline-offset-2 hover:text-slate-300">«Get cookies.txt LOCALLY»</a>
+              (Chrome) или
+              <a href="https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/" target="_blank" rel="noopener noreferrer" class="underline decoration-dotted underline-offset-2 hover:text-slate-300">«cookies.txt»</a>
+              (Firefox), залогинься на youtube.com, нажми кнопку расширения → «Export» / «Сохранить как cookies.txt». Содержимое файла → в поле ниже. Шифруется в браузере и кладётся в секрет
+              <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">YT_COOKIES</code>.
+            </p>
+
+            <label class="block">
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">cookies.txt</span>
+              <textarea
+                id="yt-cookies"
+                rows="6"
+                placeholder="# Netscape HTTP Cookie File&#10;.youtube.com&#9;TRUE&#9;/&#9;TRUE&#9;…"
+                class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 font-mono text-xs focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              ></textarea>
+              <span class="mt-1 block text-xs text-slate-500">
+                Вставь содержимое целиком, либо
+                <button type="button" id="yt-cookies-pick" class="underline decoration-dotted underline-offset-2 hover:text-slate-300">загрузи файл</button>.
+              </span>
+              <input id="yt-cookies-file" type="file" accept=".txt,text/plain" class="hidden" />
+            </label>
+
+            <div class="flex items-center justify-between gap-3">
+              <button
+                id="yt-cookies-upload"
+                type="button"
+                class="flex-1 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Загрузить в GitHub Secrets
+              </button>
+              <button
+                id="yt-cookies-clear"
+                type="button"
+                class="rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-200 hover:bg-rose-500/20"
+              >
+                Удалить из секретов
+              </button>
+            </div>
+
+            <p id="yt-cookies-status" class="hidden text-xs"></p>
+          </div>
+        </details>
+
+        <details class="mt-3 rounded-xl border border-white/10 bg-ink-900/60 p-4">
+          <summary class="cursor-pointer select-none text-sm font-medium text-slate-200">
             Логины трекеров (для поиска)
             <span class="ml-1 block text-xs font-normal text-slate-500">
               Без логина доступен только Pirate Bay. Остальные трекеры требуют учётку — оставь пустым то, чем не пользуешься.

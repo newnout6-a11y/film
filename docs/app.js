@@ -1298,6 +1298,167 @@ function bindDriveUpload() {
   });
 }
 
+// ---------- YouTube cookies uploader ----------
+// YouTube hardened bot detection in 2025 — cloud IPs (incl. GitHub Actions
+// runners) get the "Sign in to confirm you're not a bot" wall on most
+// videos. Letting users upload their cookies.txt as YT_COOKIES is the only
+// reliable workaround. We never persist this in localStorage / Drive sync.
+function setYtCookiesStatus(text, kind = "info") {
+  const el = $("#yt-cookies-status");
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.remove(
+    "hidden",
+    "text-slate-400",
+    "text-emerald-300",
+    "text-rose-300"
+  );
+  if (!text) {
+    el.classList.add("hidden");
+    return;
+  }
+  const cls =
+    kind === "success"
+      ? "text-emerald-300"
+      : kind === "error"
+      ? "text-rose-300"
+      : "text-slate-400";
+  el.classList.add(cls);
+  el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+function looksLikeNetscapeCookies(raw) {
+  if (!raw) return false;
+  const s = raw.trim();
+  if (!s) return false;
+  // Netscape cookie file: comments + tab-separated lines with 7 fields.
+  // We allow leading blank/comment lines.
+  const nonComment = s
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"));
+  if (!nonComment.length) return false;
+  // First non-comment line must split into >=6 tab-separated fields.
+  return nonComment[0].split("\t").length >= 6;
+}
+
+function bindYtCookiesUpload() {
+  const btn = $("#yt-cookies-upload");
+  if (!btn) return;
+  const clearBtn = $("#yt-cookies-clear");
+  const field = $("#yt-cookies");
+  const fileInput = $("#yt-cookies-file");
+  const filePicker = $("#yt-cookies-pick");
+
+  filePicker.addEventListener("click", (e) => {
+    e.preventDefault();
+    fileInput.click();
+  });
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    try {
+      field.value = await file.text();
+    } catch (err) {
+      setYtCookiesStatus(
+        `Не удалось прочитать файл: ${err.message || err}`,
+        "error"
+      );
+    }
+  });
+
+  btn.addEventListener("click", async () => {
+    setYtCookiesStatus("");
+    if (!cfg.repo) {
+      setYtCookiesStatus("Сначала укажи репозиторий в Настройках выше.", "error");
+      return;
+    }
+    if (!cfg.token) {
+      setYtCookiesStatus(
+        "Сначала введи GitHub-токен выше и нажми «Сохранить».",
+        "error"
+      );
+      return;
+    }
+    const raw = field.value;
+    if (!raw || !raw.trim()) {
+      setYtCookiesStatus("Поле пустое — вставь содержимое cookies.txt.", "error");
+      return;
+    }
+    if (!looksLikeNetscapeCookies(raw)) {
+      setYtCookiesStatus(
+        "Это не похоже на cookies.txt в Netscape-формате. Экспортируй через расширение «Get cookies.txt LOCALLY» или «cookies.txt» (Firefox).",
+        "error"
+      );
+      return;
+    }
+
+    btn.disabled = true;
+    setYtCookiesStatus("Шифрую в браузере и отправляю…");
+    try {
+      const v = await uploadGitHubSecret("YT_COOKIES", raw);
+      setYtCookiesStatus(
+        `Записано в GitHub Secrets и подтверждено GET-ом: YT_COOKIES (обновлён ${formatSecretTs(
+          v
+        )}). На следующем запуске yt-dlp возьмёт куки из секрета.`,
+        "success"
+      );
+      toast("Куки YouTube загружены в GitHub.", "success");
+      // Wipe from the textarea so it doesn't sit in the DOM.
+      field.value = "";
+    } catch (err) {
+      const msg = err.message || String(err);
+      const hint = /\b403\b/.test(msg)
+        ? " У токена должно быть право «Secrets: Read and Write»."
+        : "";
+      setYtCookiesStatus(`Ошибка: ${msg}${hint}`, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  clearBtn.addEventListener("click", async () => {
+    setYtCookiesStatus("");
+    if (!cfg.repo || !cfg.token) {
+      setYtCookiesStatus(
+        "Сначала укажи репо и GitHub-токен в Настройках выше.",
+        "error"
+      );
+      return;
+    }
+    if (!confirm("Удалить секрет YT_COOKIES из GitHub? yt-dlp снова станет ходить без авторизации.")) {
+      return;
+    }
+    clearBtn.disabled = true;
+    setYtCookiesStatus("Удаляю…");
+    try {
+      const [owner, repo] = cfg.repo.split("/");
+      const url = `https://api.github.com/repos/${owner}/${repo}/actions/secrets/YT_COOKIES`;
+      const res = await fetch(url, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${cfg.token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      });
+      if (res.status === 204) {
+        setYtCookiesStatus("Секрет YT_COOKIES удалён из GitHub.", "success");
+        toast("Секрет YT_COOKIES удалён.", "success");
+      } else if (res.status === 404) {
+        setYtCookiesStatus("Секрет YT_COOKIES уже не существует.", "info");
+      } else {
+        const txt = await res.text();
+        throw new Error(`HTTP ${res.status}: ${txt.slice(0, 200)}`);
+      }
+    } catch (err) {
+      setYtCookiesStatus(`Ошибка: ${err.message || err}`, "error");
+    } finally {
+      clearBtn.disabled = false;
+    }
+  });
+}
+
 // ---------- Tracker creds uploader ----------
 const TRACKER_FIELDS = [
   {
@@ -2178,6 +2339,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindInstall();
   bindPaste();
   bindDriveUpload();
+  bindYtCookiesUpload();
   bindTrackersUpload();
   bindSearch();
   bindUrlHint();

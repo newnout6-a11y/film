@@ -1,7 +1,7 @@
 "use strict";
 
 // Bump this whenever shell assets change to force a refresh.
-const CACHE_VERSION = "film-beamer-v12-libsodium-bundled";
+const CACHE_VERSION = "film-beamer-v13-yt-cookies";
 const SHELL = [
   "./",
   "./index.html",

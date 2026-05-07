@@ -128,14 +128,24 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends aria2 ffmpeg jq curl ca-certificates >/dev/null
+          sudo apt-get install -y --no-install-recommends aria2 ffmpeg jq curl ca-certificates unzip >/dev/null
           # rclone (latest stable from rclone.org install script)
           curl -fsSL https://rclone.org/install.sh | sudo bash
           # yt-dlp standalone binary (faster updates than apt)
           sudo curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
+          # Deno — required by recent yt-dlp for YouTube JS extraction (since
+          # YouTube ships obfuscated JS that yt-dlp now executes locally to
+          # produce signed stream URLs). Without it some formats are missing
+          # and bot-detection trips much more aggressively.
+          curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip \
+            -o /tmp/deno.zip
+          sudo unzip -o -q /tmp/deno.zip -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/deno
+          rm -f /tmp/deno.zip
           rclone version
           yt-dlp --version
+          deno --version | head -n1
           aria2c --version | head -n1
 
       - name: Configure rclone
@@ -242,6 +252,7 @@ jobs:
           FORMAT: ${{ steps.detect.outputs.format }}
           EXTRACT_AUDIO: ${{ steps.detect.outputs.extract_audio }}
           WORK: ${{ steps.workspace.outputs.dir }}
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
         run: |
           set -euo pipefail
           cd "$WORK"
@@ -255,6 +266,29 @@ jobs:
           else
             extra+=(--merge-output-format mp4)
           fi
+
+          # YouTube hardened bot-detection in 2025: the default `web` player
+          # client almost always trips the "Sign in to confirm you're not a
+          # bot" wall on cloud IPs. Try the `tv_simply` / `mweb` / `ios`
+          # clients first — those use mobile/TV API endpoints that don't
+          # require a logged-in session for most public videos.
+          extra+=(--extractor-args "youtube:player_client=tv_simply,mweb,ios,web_safari")
+
+          # Optional cookies fallback. If the user uploaded a cookies.txt
+          # via the in-app uploader (secret: YT_COOKIES), use it. This is
+          # the only thing that reliably defeats hard bot-checks on
+          # rate-limited / age-gated content.
+          cookies_file=""
+          if [ -n "${YT_COOKIES:-}" ]; then
+            cookies_file="$HOME/.config/yt-dlp/cookies.txt"
+            mkdir -p "$(dirname "$cookies_file")"
+            printf '%s' "$YT_COOKIES" > "$cookies_file"
+            chmod 600 "$cookies_file"
+            extra+=(--cookies "$cookies_file")
+            echo "Using YT_COOKIES from secret ($(wc -l < "$cookies_file") lines)."
+          fi
+
+          set +e
           yt-dlp \
             --no-progress \
             --newline \
@@ -265,6 +299,27 @@ jobs:
             -o "$out_template" \
             "${extra[@]}" \
             "$URL"
+          ytdlp_rc=$?
+          set -e
+
+          # Best-effort cleanup of cookies on disk.
+          if [ -n "$cookies_file" ] && [ -f "$cookies_file" ]; then
+            shred -u "$cookies_file" 2>/dev/null || rm -f "$cookies_file"
+          fi
+
+          if [ "$ytdlp_rc" -ne 0 ]; then
+            {
+              echo "## yt-dlp failed (exit $ytdlp_rc)"
+              echo ""
+              if [ -z "${YT_COOKIES:-}" ] && [[ "$URL" =~ (youtube\.com|youtu\.be) ]]; then
+                echo "YouTube часто требует авторизации с runner-IP («Sign in to confirm you're not a bot»)."
+                echo "Решение: в настройках приложения открой раздел «Куки YouTube» и загрузи свой \`cookies.txt\`."
+                echo "Любое расширение типа *Get cookies.txt LOCALLY* в Chrome/Firefox экспортирует его за пару кликов."
+                echo "Файл попадёт в репозиторный секрет \`YT_COOKIES\` и используется только этим воркфлоу."
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit "$ytdlp_rc"
+          fi
           ls -lah "$WORK"
 
       - name: Upload to Google Drive
