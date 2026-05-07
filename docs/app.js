@@ -129,6 +129,18 @@ function timeAgo(isoString) {
   return `${d} дн назад`;
 }
 
+// Render an `updated_at` from GitHub's secret read-back into a short
+// "12 с назад · 18:42:01" form so it's obvious the GET hit live API.
+function formatSecretTs(secret) {
+  if (!secret || !secret.updated_at) return "только что";
+  const ts = new Date(secret.updated_at);
+  const ago = timeAgo(secret.updated_at);
+  const hh = String(ts.getHours()).padStart(2, "0");
+  const mm = String(ts.getMinutes()).padStart(2, "0");
+  const ss = String(ts.getSeconds()).padStart(2, "0");
+  return `${ago} · ${hh}:${mm}:${ss}`;
+}
+
 // ---------- status localisation ----------
 const STATUS_LABELS = {
   queued: "в очереди",
@@ -240,6 +252,19 @@ class GitHubClient {
       }
     );
   }
+
+  // Read-back so we can confirm a PUT actually landed: returns
+  // { name, created_at, updated_at } or null on 404.
+  async getActionsSecret(name) {
+    try {
+      return await this._fetch(
+        `/repos/${this.cfg.repo}/actions/secrets/${encodeURIComponent(name)}`
+      );
+    } catch (err) {
+      if (/\b404\b/.test(err.message || "")) return null;
+      throw err;
+    }
+  }
 }
 
 // ---------- libsodium (lazy-loaded for in-app secret uploads) ----------
@@ -290,7 +315,17 @@ async function uploadGitHubSecret(name, value) {
     throw new Error("Репо не вернул публичный ключ для секретов.");
   }
   const encrypted = await ghEncryptSecret(value, pk.key);
-  return gh.putActionsSecret(name, encrypted, pk.key_id);
+  await gh.putActionsSecret(name, encrypted, pk.key_id);
+  // Read it back so callers can prove to the user that the secret really
+  // landed (PUT returns 201/204 with no body — without a follow-up GET there
+  // is no way to distinguish "succeeded" from "no-op silently").
+  const verified = await gh.getActionsSecret(name);
+  if (!verified) {
+    throw new Error(
+      `GitHub принял PUT, но GET /actions/secrets/${name} вернул 404 — секрет не записался. Проверь права PAT (нужно «Secrets: Read and Write»).`
+    );
+  }
+  return verified;
 }
 
 // ---------- Account sync via Google Drive ----------
@@ -1081,6 +1116,14 @@ function setDriveStatus(text, kind = "info") {
       ? "text-rose-300"
       : "text-slate-400";
   el.classList.add(cls);
+  // The status sits below the upload button. On mobile the dialog can be
+  // taller than the viewport, so scroll the message into view so the user
+  // actually sees the success/error message instead of guessing.
+  try {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+  } catch {
+    /* older browsers */
+  }
 }
 
 function updateServiceAccountEmail() {
@@ -1176,17 +1219,25 @@ function bindDriveUpload() {
     try {
       const uploaded = [];
       if (saInfo) {
-        await uploadGitHubSecret("GDRIVE_SERVICE_ACCOUNT", saInfo.json);
-        uploaded.push("GDRIVE_SERVICE_ACCOUNT");
+        const v = await uploadGitHubSecret(
+          "GDRIVE_SERVICE_ACCOUNT",
+          saInfo.json
+        );
+        uploaded.push(`GDRIVE_SERVICE_ACCOUNT (обновлён ${formatSecretTs(v)})`);
       }
       if (folderId) {
-        await uploadGitHubSecret("GDRIVE_FOLDER_ID", folderId);
-        uploaded.push("GDRIVE_FOLDER_ID");
+        const v = await uploadGitHubSecret("GDRIVE_FOLDER_ID", folderId);
+        uploaded.push(`GDRIVE_FOLDER_ID (обновлён ${formatSecretTs(v)})`);
       }
       const tail = saInfo
         ? ` Не забудь расшарить папку Drive на ${saInfo.email}.`
         : "";
-      setDriveStatus(`Секреты обновлены: ${uploaded.join(", ")}.${tail}`, "success");
+      setDriveStatus(
+        `Записано в GitHub Secrets и подтверждено GET-ом: ${uploaded.join(
+          "; "
+        )}.${tail}`,
+        "success"
+      );
       toast("Секреты Drive загружены в GitHub.", "success");
       // Persist locally so account-sync can use the SA+folder as the
       // "account key" across page reloads. We keep the JSON in localStorage
@@ -1314,11 +1365,13 @@ function bindTrackersUpload() {
     try {
       const uploaded = [];
       for (const pair of pairs) {
-        await uploadGitHubSecret(pair.name, pair.value);
-        uploaded.push(pair.name);
+        const v = await uploadGitHubSecret(pair.name, pair.value);
+        uploaded.push(`${pair.name} (${formatSecretTs(v)})`);
       }
       setTrackersStatus(
-        `Секреты обновлены: ${uploaded.join(", ")}.`,
+        `Записано в GitHub Secrets и подтверждено GET-ом: ${uploaded.join(
+          "; "
+        )}.`,
         "success"
       );
       toast("Секреты трекеров загружены в GitHub.", "success");
