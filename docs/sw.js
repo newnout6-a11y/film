@@ -1,7 +1,7 @@
 "use strict";
 
 // Bump this whenever shell assets change to force a refresh.
-const CACHE_VERSION = "film-beamer-v1";
+const CACHE_VERSION = "film-beamer-v2-ru";
 const SHELL = [
   "./",
   "./index.html",
@@ -14,7 +14,11 @@ const SHELL = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_VERSION).then((cache) => cache.addAll(SHELL))
+    caches.open(CACHE_VERSION).then((cache) =>
+      // cache: "reload" bypasses the HTTP cache so we always precache the
+      // freshest shell bytes, not whatever the browser had stored.
+      cache.addAll(SHELL.map((url) => new Request(url, { cache: "reload" })))
+    )
   );
   self.skipWaiting();
 });
