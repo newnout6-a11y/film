@@ -1,7 +1,7 @@
 "use strict";
 
 // Bump this whenever shell assets change to force a refresh.
-const CACHE_VERSION = "film-beamer-v11-scroll-fix-v2";
+const CACHE_VERSION = "film-beamer-v12-libsodium-bundled";
 const SHELL = [
   "./",
   "./index.html",
@@ -10,6 +10,8 @@ const SHELL = [
   "./manifest.webmanifest",
   "./icon.svg",
   "./icon-maskable.svg",
+  "./vendor/libsodium-sumo.min.js",
+  "./vendor/libsodium-wrappers.min.js",
 ];
 
 self.addEventListener("install", (event) => {

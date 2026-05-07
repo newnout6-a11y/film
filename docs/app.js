@@ -268,32 +268,69 @@ class GitHubClient {
 }
 
 // ---------- libsodium (lazy-loaded for in-app secret uploads) ----------
-const SODIUM_CDN_URL =
-  "https://cdn.jsdelivr.net/npm/libsodium-wrappers@0.7.13/dist/browsers-sumo/sodium.js";
+// Two-step load: first the libsodium-sumo binary (sets window.libsodium),
+// then the wrappers (read window.libsodium, set window.sodium).
+// We try local copies in ./vendor first (works in any region, blocks no
+// CDN), and fall back to public CDNs if the static host has them missing.
+const SODIUM_BINARY_SOURCES = [
+  "./vendor/libsodium-sumo.min.js",
+  "https://cdn.jsdelivr.net/npm/libsodium-sumo@0.7.13/dist/modules-sumo/libsodium-sumo.min.js",
+  "https://unpkg.com/libsodium-sumo@0.7.13/dist/modules-sumo/libsodium-sumo.min.js",
+];
+const SODIUM_WRAPPERS_SOURCES = [
+  "./vendor/libsodium-wrappers.min.js",
+  "https://cdn.jsdelivr.net/npm/libsodium-wrappers-sumo@0.7.13/dist/modules-sumo/libsodium-wrappers.min.js",
+  "https://unpkg.com/libsodium-wrappers-sumo@0.7.13/dist/modules-sumo/libsodium-wrappers.min.js",
+];
+
+function _loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src;
+    if (/^https?:/i.test(src)) s.crossOrigin = "anonymous";
+    s.onload = () => resolve(src);
+    s.onerror = () => reject(new Error(`failed: ${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+async function _loadFromAny(sources, label) {
+  const errors = [];
+  for (const src of sources) {
+    try {
+      await _loadScriptOnce(src);
+      return src;
+    } catch (err) {
+      errors.push(`${src} → ${err.message || err}`);
+      console.warn(`[sodium] ${label} load failed at`, src, err);
+    }
+  }
+  throw new Error(
+    `Не удалось загрузить ${label}. Все источники недоступны:\n` +
+      errors.join("\n") +
+      "\nПроверь интернет, расширения браузера (uBlock/AdGuard) или сетевой фильтр."
+  );
+}
+
 let _sodiumLoading = null;
 function loadSodium() {
   if (window.sodium && window.sodium.ready) {
     return window.sodium.ready.then(() => window.sodium);
   }
   if (_sodiumLoading) return _sodiumLoading;
-  _sodiumLoading = new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = SODIUM_CDN_URL;
-    s.crossOrigin = "anonymous";
-    s.onload = () => {
-      if (!window.sodium) {
-        return reject(new Error("libsodium не загрузился."));
-      }
-      window.sodium.ready.then(() => resolve(window.sodium));
-    };
-    s.onerror = () =>
-      reject(
-        new Error(
-          "Не удалось загрузить libsodium с CDN. Проверь интернет или расширения браузера."
-        )
-      );
-    document.head.appendChild(s);
-  });
+  _sodiumLoading = (async () => {
+    if (!window.libsodium) {
+      await _loadFromAny(SODIUM_BINARY_SOURCES, "libsodium-sumo");
+    }
+    if (!window.sodium) {
+      await _loadFromAny(SODIUM_WRAPPERS_SOURCES, "libsodium-wrappers");
+    }
+    if (!window.sodium || !window.sodium.ready) {
+      throw new Error("libsodium-wrappers загружен, но window.sodium не появился.");
+    }
+    await window.sodium.ready;
+    return window.sodium;
+  })();
   return _sodiumLoading;
 }
 
