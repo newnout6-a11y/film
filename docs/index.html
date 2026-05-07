@@ -316,9 +316,9 @@
     <!-- Settings dialog -->
     <div
       id="settings-dialog"
-      class="fixed inset-0 z-50 hidden items-center justify-center bg-black/60 p-4 backdrop-blur"
+      class="fixed inset-0 z-50 hidden items-start justify-center overflow-y-auto bg-black/60 p-4 pb-12 backdrop-blur sm:items-center"
     >
-      <div class="glass w-full max-w-md rounded-2xl border border-white/10 bg-ink-800/90 p-6 shadow-2xl">
+      <div class="glass my-auto max-h-[calc(100vh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-white/10 bg-ink-800/90 p-6 shadow-2xl">
         <div class="flex items-start justify-between">
           <div>
             <h3 class="text-lg font-semibold">Настройки</h3>
@@ -587,9 +587,9 @@
     <!-- Progress dialog (live workflow steps) -->
     <div
       id="progress-dialog"
-      class="fixed inset-0 z-50 hidden items-center justify-center bg-black/60 p-4 backdrop-blur"
+      class="fixed inset-0 z-50 hidden items-start justify-center overflow-y-auto bg-black/60 p-4 pb-12 backdrop-blur sm:items-center"
     >
-      <div class="glass w-full max-w-md rounded-2xl border border-white/10 bg-ink-800/95 p-6 shadow-2xl">
+      <div class="glass my-auto max-h-[calc(100vh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-white/10 bg-ink-800/95 p-6 shadow-2xl">
         <div class="flex items-start justify-between">
           <div class="min-w-0">
             <h3 id="progress-title" class="truncate text-lg font-semibold text-slate-100">
