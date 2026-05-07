@@ -723,6 +723,64 @@
           </div>
         </details>
 
+        <details class="mt-3 rounded-xl border border-white/10 bg-ink-900/60 p-4" open>
+          <summary class="cursor-pointer select-none text-sm font-medium text-slate-200">
+            Авто-распознать cookies (YouTube · RuTracker · Kinozal · NNM)
+            <span class="ml-1 block text-xs font-normal text-slate-500">
+              Грузишь один большой <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">cookies.txt</code>, мы сами раскладываем по сайтам и кладём в GitHub Secrets.
+            </span>
+          </summary>
+          <div class="mt-3 space-y-3">
+            <p class="text-xs text-slate-400">
+              Установи
+              <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" rel="noopener noreferrer" class="underline decoration-dotted underline-offset-2 hover:text-slate-300">«Get cookies.txt LOCALLY»</a>
+              (Chrome) или
+              <a href="https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/" target="_blank" rel="noopener noreferrer" class="underline decoration-dotted underline-offset-2 hover:text-slate-300">«cookies.txt»</a>
+              (Firefox), залогинься во все нужные сайты, выгрузи <strong>один</strong> файл «всех» cookies — а здесь мы сами разложим по
+              <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">YT_COOKIES</code>,
+              <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">RUTRACKER_COOKIES</code>,
+              <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">KINOZAL_COOKIES</code>,
+              <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">NNM_COOKIES</code>.
+              Файл не сохраняется — только в памяти вкладки.
+            </p>
+
+            <div
+              id="cookie-wizard-drop"
+              class="rounded-xl border-2 border-dashed border-white/10 bg-ink-900/40 px-4 py-6 text-center transition"
+            >
+              <p class="text-xs text-slate-400">
+                Перетащи сюда <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">cookies.txt</code>
+                или
+                <button
+                  type="button"
+                  id="cookie-wizard-pick"
+                  class="rounded-lg bg-white/10 px-2.5 py-1 text-[11px] font-medium text-slate-100 hover:bg-white/20"
+                >
+                  выбери файл
+                </button>
+              </p>
+              <input id="cookie-wizard-file" type="file" accept=".txt,text/plain" class="hidden" />
+            </div>
+
+            <div id="cookie-wizard-buckets" class="grid gap-2 sm:grid-cols-2"></div>
+
+            <div class="flex items-center justify-between gap-2">
+              <button
+                id="cookie-wizard-upload-all"
+                type="button"
+                class="rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Загрузить все распознанные секреты
+              </button>
+              <p class="text-[11px] text-slate-500">
+                Каждый секрет шифруется в браузере (libsodium) и сразу подтверждается GET-ом.
+              </p>
+            </div>
+
+            <p id="cookie-wizard-status" class="hidden text-xs"></p>
+          </div>
+        </details>
+
         <details class="mt-3 rounded-xl border border-white/10 bg-ink-900/60 p-4">
           <summary class="cursor-pointer select-none text-sm font-medium text-slate-200">
             Внешний вид и уведомления
@@ -1439,6 +1497,23 @@
               <p class="text-[11px] text-slate-500">
                 Поля разделяются <code>|</code> или табами. Например:
                 <code>https://youtu.be/dQw4w9WgXcQ | rickroll | Музыка | 1080p</code>
+              </p>
+            </div>
+
+            <div class="help-card sm:col-span-2">
+              <h4 class="help-card-title">Авто-распознавание cookies</h4>
+              <p class="text-xs text-slate-300">
+                В Настройках есть мастер «Авто-распознать cookies»: ты загружаешь
+                один <code>cookies.txt</code> со всеми сайтами, мы парсим его в
+                браузере, отделяем YouTube/Google от RuTracker/Kinozal/NNM-Club
+                и каждый набор кладём в свой GitHub-секрет (<code>YT_COOKIES</code>,
+                <code>RUTRACKER_COOKIES</code>, <code>KINOZAL_COOKIES</code>,
+                <code>NNM_COOKIES</code>). Файл при этом не сохраняется ни в localStorage,
+                ни на Drive — только в памяти вкладки.
+              </p>
+              <p class="mt-2 text-[11px] text-slate-500">
+                Экспорт — расширением «Get cookies.txt LOCALLY» (Chrome) или «cookies.txt» (Firefox)
+                после логина в нужные сайты.
               </p>
             </div>
 

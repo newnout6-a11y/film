@@ -24,7 +24,7 @@
 //     diagnostics in the page can show which SW is running.
 // =============================================================================
 
-const CACHE_VERSION = "film-beamer-v20-network-first";
+const CACHE_VERSION = "film-beamer-v21-cookie-wizard";
 const CACHE_PREFIX = "film-beamer-";
 
 // Things that change every release — must come from network when possible.
