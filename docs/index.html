@@ -228,6 +228,59 @@
       <section class="mt-12">
         <div class="mb-3 flex items-center justify-between">
           <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400">
+            Поиск по трекерам
+          </h2>
+          <span class="text-xs text-slate-500">
+            RuTracker · Pirate Bay · Kinozal · NNM-Club
+          </span>
+        </div>
+        <div class="glass rounded-2xl border border-white/10 bg-ink-800/60 p-4 shadow-2xl shadow-black/40 backdrop-blur sm:p-5">
+          <label class="block">
+            <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Что ищем</span>
+            <div class="mt-2 flex gap-2">
+              <input
+                id="search-query"
+                type="text"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="Название фильма / сериала"
+                class="grow rounded-xl border border-white/10 bg-ink-900 px-4 py-3 text-base text-slate-100 placeholder:text-slate-500 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              />
+              <button
+                id="search-btn"
+                type="button"
+                class="shrink-0 rounded-xl bg-gradient-to-r from-accent-500 to-fuchsia-500 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-accent-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <span id="search-btn-label">Найти</span>
+              </button>
+            </div>
+            <span class="mt-1 block text-xs text-slate-500">
+              Запускает workflow <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">search.yml</code> на твоём репо.
+              Логины трекеров — в Настройках выше. Без них работает только Pirate Bay.
+            </span>
+          </label>
+
+          <p id="search-error" class="mt-3 text-sm text-rose-300/90"></p>
+
+          <div id="search-progress" class="mt-4 hidden">
+            <div class="text-xs font-medium uppercase tracking-wider text-slate-400">Этапы</div>
+            <ul id="search-stages" class="mt-2 space-y-1 text-sm text-slate-200"></ul>
+          </div>
+
+          <div id="search-results" class="mt-4 hidden">
+            <div class="mb-2 flex items-center justify-between">
+              <div class="text-xs font-medium uppercase tracking-wider text-slate-400">Топ-5 — выбери и нажми «Закинуть»</div>
+              <span id="search-results-count" class="text-xs text-slate-500"></span>
+            </div>
+            <ul id="search-results-list" class="grid gap-2"></ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="mt-12">
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400">
             Последние забросы
           </h2>
           <button
@@ -308,7 +361,7 @@
           <label class="block">
             <span class="text-xs font-medium uppercase tracking-wider text-slate-400">
               GitHub-токен (PAT)
-              <span class="ml-1 text-slate-500 normal-case">(fine-grained: Actions Read &amp; Write на этом репо)</span>
+              <span class="ml-1 text-slate-500 normal-case">(fine-grained: Actions R&amp;W, Metadata R; для загрузчика ниже — ещё Secrets R&amp;W)</span>
             </span>
             <input
               id="cfg-token"
@@ -332,6 +385,156 @@
             Сохранить
           </button>
         </div>
+
+        <details class="mt-6 rounded-xl border border-white/10 bg-ink-900/60 p-4">
+          <summary class="cursor-pointer select-none text-sm font-medium text-slate-200">
+            Загрузить ключ Google Drive
+            <span class="ml-1 block text-xs font-normal text-slate-500">
+              Зашифрует JSON в браузере и положит в GitHub Secrets — без захода на github.com.
+            </span>
+          </summary>
+          <div class="mt-3 space-y-3">
+            <p class="text-xs text-slate-400">
+              Шифрование: libsodium sealed box (то же, что использует GitHub).
+              Сначала нажми «Сохранить» выше — в загрузчике используются репо и токен из настроек.
+            </p>
+
+            <label class="block">
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Папка Drive (URL или ID)</span>
+              <input
+                id="drive-folder"
+                type="text"
+                placeholder="https://drive.google.com/drive/folders/…"
+                class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              />
+              <span class="mt-1 block text-xs text-slate-500">
+                Пишется в секрет <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">GDRIVE_FOLDER_ID</code>.
+              </span>
+            </label>
+
+            <label class="block">
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Service account JSON</span>
+              <textarea
+                id="drive-json"
+                rows="5"
+                placeholder='{"type":"service_account","project_id":"…", … }'
+                class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 font-mono text-xs focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              ></textarea>
+              <span class="mt-1 block text-xs text-slate-500">
+                Вставь JSON целиком, либо
+                <button type="button" id="drive-json-pick" class="underline decoration-dotted underline-offset-2 hover:text-slate-300">загрузи файл</button>.
+                Пишется в секрет <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">GDRIVE_SERVICE_ACCOUNT</code>.
+              </span>
+              <input id="drive-json-file" type="file" accept="application/json,.json" class="hidden" />
+            </label>
+
+            <div id="drive-sa-email" class="hidden rounded-lg border border-amber-300/30 bg-amber-500/10 p-3 text-xs text-amber-100">
+              <p class="font-semibold">Не забудь:</p>
+              <p class="mt-1">Расшарь папку Drive на этот email с правом Editor:</p>
+              <code id="drive-sa-email-value" class="mt-1 block break-all font-mono text-[11px]"></code>
+            </div>
+
+            <button
+              id="drive-upload"
+              type="button"
+              class="w-full rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Загрузить в GitHub Secrets
+            </button>
+
+            <p id="drive-status" class="hidden text-xs"></p>
+          </div>
+        </details>
+
+        <details class="mt-3 rounded-xl border border-white/10 bg-ink-900/60 p-4">
+          <summary class="cursor-pointer select-none text-sm font-medium text-slate-200">
+            Логины трекеров (для поиска)
+            <span class="ml-1 block text-xs font-normal text-slate-500">
+              Без логина доступен только Pirate Bay. Остальные трекеры требуют учётку — оставь пустым то, чем не пользуешься.
+            </span>
+          </summary>
+          <div class="mt-3 space-y-3">
+            <p class="text-xs text-slate-400">
+              Каждый логин шифруется в браузере (libsodium sealed box) и кладётся в GitHub Secrets отдельной парой
+              <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">*_USERNAME</code> /
+              <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">*_PASSWORD</code>.
+              Сначала «Сохранить» выше — нужны репо и токен.
+            </p>
+
+            <div class="grid gap-3 sm:grid-cols-2">
+              <label class="block">
+                <span class="text-xs font-medium uppercase tracking-wider text-slate-400">RuTracker — логин</span>
+                <input
+                  id="trk-rutracker-user"
+                  type="text"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+                />
+              </label>
+              <label class="block">
+                <span class="text-xs font-medium uppercase tracking-wider text-slate-400">RuTracker — пароль</span>
+                <input
+                  id="trk-rutracker-pass"
+                  type="password"
+                  autocomplete="off"
+                  class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+                />
+              </label>
+              <label class="block">
+                <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Kinozal — логин</span>
+                <input
+                  id="trk-kinozal-user"
+                  type="text"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+                />
+              </label>
+              <label class="block">
+                <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Kinozal — пароль</span>
+                <input
+                  id="trk-kinozal-pass"
+                  type="password"
+                  autocomplete="off"
+                  class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+                />
+              </label>
+              <label class="block">
+                <span class="text-xs font-medium uppercase tracking-wider text-slate-400">NNM-Club — логин</span>
+                <input
+                  id="trk-nnm-user"
+                  type="text"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+                />
+              </label>
+              <label class="block">
+                <span class="text-xs font-medium uppercase tracking-wider text-slate-400">NNM-Club — пароль</span>
+                <input
+                  id="trk-nnm-pass"
+                  type="password"
+                  autocomplete="off"
+                  class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+                />
+              </label>
+            </div>
+
+            <button
+              id="trackers-upload"
+              type="button"
+              class="w-full rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Загрузить логины в GitHub Secrets
+            </button>
+
+            <p id="trackers-status" class="hidden text-xs"></p>
+          </div>
+        </details>
       </div>
     </div>
 
