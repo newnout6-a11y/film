@@ -12,6 +12,22 @@ const defaultCfg = {
   branch: "",
   workflow: "download-to-drive.yml",
   token: "",
+  // ---- Account-mode credentials (cross-device sync via Google Drive) ----
+  // The service-account JSON doubles as the "account key": same JSON is used
+  // both for uploading GDRIVE_* secrets and for reading/writing the cfg blob
+  // on Drive. Per-device, never synced — paste once on each new device.
+  driveSaJson: "",
+  driveFolderId: "",
+  // Whether to auto-push the cfg blob to Drive on every "Сохранить" click.
+  accountAutoPush: false,
+  // Tracker creds. Mirror what gets uploaded to GitHub Secrets so we can sync
+  // them across devices and re-upload to Secrets on each new machine without
+  // the user re-typing them.
+  trackers: {
+    rutracker: { user: "", pass: "" },
+    kinozal: { user: "", pass: "" },
+    nnm: { user: "", pass: "" },
+  },
 };
 
 // Cached result of branch autodetect, keyed by repo. Stores the *resolved*
@@ -277,6 +293,260 @@ async function uploadGitHubSecret(name, value) {
   return gh.putActionsSecret(name, encrypted, pk.key_id);
 }
 
+// ---------- Account sync via Google Drive ----------
+//
+// We keep a JSON blob (`film-beamer-config.json`) inside the user's existing
+// Drive folder (the same one that GDRIVE_FOLDER_ID points at). The
+// service-account JSON the user pastes in Settings is the "account key": it
+// authenticates JWT-flow OAuth (RS256, signed in the browser via Web Crypto)
+// and gives the browser direct REST access to Drive. Per-device, the user
+// pastes SA + Folder once; everything else (repo, branch, PAT, trackers)
+// pulls down from the blob.
+
+const SYNC_FILENAME = "film-beamer-config.json";
+const SYNC_SCOPES = "https://www.googleapis.com/auth/drive.file";
+
+let _driveAccessToken = null; // { token, expiresAt }
+
+function pemToArrayBuffer(pem) {
+  const b64 = pem
+    .replace(/-----BEGIN [^-]+-----/g, "")
+    .replace(/-----END [^-]+-----/g, "")
+    .replace(/\s+/g, "");
+  const bin = atob(b64);
+  const buf = new ArrayBuffer(bin.length);
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return buf;
+}
+
+function arrayBufferToBase64Url(buf) {
+  const bytes = new Uint8Array(buf);
+  let str = "";
+  for (let i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
+  return btoa(str)
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
+function utf8ToBase64Url(str) {
+  return btoa(unescape(encodeURIComponent(str)))
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
+async function getDriveAccessToken() {
+  if (
+    _driveAccessToken &&
+    _driveAccessToken.expiresAt > Date.now() + 60_000
+  ) {
+    return _driveAccessToken.token;
+  }
+  if (!cfg.driveSaJson) {
+    throw new Error(
+      "Сначала вставь Google service-account JSON в раздел «Загрузить ключ Google Drive»."
+    );
+  }
+  let sa;
+  try {
+    sa = JSON.parse(cfg.driveSaJson);
+  } catch (err) {
+    throw new Error(`Service-account JSON битый: ${err.message}`);
+  }
+  if (!sa.client_email || !sa.private_key) {
+    throw new Error("В JSON нет client_email/private_key.");
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const header = utf8ToBase64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const payload = utf8ToBase64Url(
+    JSON.stringify({
+      iss: sa.client_email,
+      scope: SYNC_SCOPES,
+      aud: "https://oauth2.googleapis.com/token",
+      iat: now,
+      exp: now + 3600,
+    })
+  );
+  const signingInput = `${header}.${payload}`;
+
+  const keyBuf = pemToArrayBuffer(sa.private_key);
+  const cryptoKey = await crypto.subtle.importKey(
+    "pkcs8",
+    keyBuf,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sigBuf = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    cryptoKey,
+    new TextEncoder().encode(signingInput)
+  );
+  const jwt = `${signingInput}.${arrayBufferToBase64Url(sigBuf)}`;
+
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion: jwt,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Google OAuth ${res.status}: ${text}`);
+  }
+  const data = await res.json();
+  _driveAccessToken = {
+    token: data.access_token,
+    expiresAt: Date.now() + (data.expires_in || 3600) * 1000,
+  };
+  return data.access_token;
+}
+
+async function findDriveCfgFile(token, folderId) {
+  const q = `name='${SYNC_FILENAME}' and '${folderId}' in parents and trashed=false`;
+  const url =
+    "https://www.googleapis.com/drive/v3/files?" +
+    new URLSearchParams({
+      q,
+      fields: "files(id,name,modifiedTime)",
+      pageSize: "10",
+    }).toString();
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Drive list ${res.status}: ${text}`);
+  }
+  const data = await res.json();
+  return data.files && data.files[0] ? data.files[0] : null;
+}
+
+async function uploadDriveCfg(token, folderId, content, fileId) {
+  // Multipart upload: metadata + content in one request.
+  const meta = fileId
+    ? { name: SYNC_FILENAME }
+    : { name: SYNC_FILENAME, parents: [folderId] };
+  const boundary = "-------film-beamer-" + Math.random().toString(16).slice(2);
+  const body =
+    `--${boundary}\r\n` +
+    "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
+    JSON.stringify(meta) +
+    `\r\n--${boundary}\r\n` +
+    "Content-Type: application/json\r\n\r\n" +
+    content +
+    `\r\n--${boundary}--`;
+  const url = fileId
+    ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`
+    : "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
+  const res = await fetch(url, {
+    method: fileId ? "PATCH" : "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": `multipart/related; boundary=${boundary}`,
+    },
+    body,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Drive upload ${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
+async function downloadDriveCfg(token, fileId) {
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Drive download ${res.status}: ${text}`);
+  }
+  return res.text();
+}
+
+// Build the JSON blob that lives on Drive. We deliberately leave out the
+// per-device bootstrap creds (driveSaJson, driveFolderId, accountAutoPush)
+// so the user always types those by hand on a new device — that's the
+// "log in" step.
+function syncBlobFromCfg() {
+  return JSON.stringify(
+    {
+      version: 1,
+      saved_at: new Date().toISOString(),
+      cfg: {
+        repo: cfg.repo || "",
+        branch: cfg.branch || "",
+        workflow: cfg.workflow || "",
+        token: cfg.token || "",
+      },
+      trackers: cfg.trackers || {},
+    },
+    null,
+    2
+  );
+}
+
+function applySyncBlob(blob) {
+  let parsed;
+  try {
+    parsed = JSON.parse(blob);
+  } catch (err) {
+    throw new Error(`Файл sync некорректный: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || !parsed.cfg) {
+    throw new Error("В файле sync нет поля cfg.");
+  }
+  cfg.repo = parsed.cfg.repo || cfg.repo;
+  cfg.branch = parsed.cfg.branch || "";
+  cfg.workflow = parsed.cfg.workflow || cfg.workflow;
+  cfg.token = parsed.cfg.token || cfg.token;
+  if (parsed.trackers && typeof parsed.trackers === "object") {
+    cfg.trackers = { ...(cfg.trackers || {}), ...parsed.trackers };
+  }
+  saveCfg(cfg);
+}
+
+async function backupCfgToDrive() {
+  if (!cfg.driveFolderId) {
+    throw new Error(
+      "Не указан Folder ID — заполни в разделе «Загрузить ключ Google Drive»."
+    );
+  }
+  const token = await getDriveAccessToken();
+  const existing = await findDriveCfgFile(token, cfg.driveFolderId);
+  await uploadDriveCfg(
+    token,
+    cfg.driveFolderId,
+    syncBlobFromCfg(),
+    existing ? existing.id : null
+  );
+}
+
+async function restoreCfgFromDrive() {
+  if (!cfg.driveFolderId) {
+    throw new Error(
+      "Не указан Folder ID — заполни в разделе «Загрузить ключ Google Drive»."
+    );
+  }
+  const token = await getDriveAccessToken();
+  const existing = await findDriveCfgFile(token, cfg.driveFolderId);
+  if (!existing) {
+    throw new Error(
+      `На Drive в этой папке нет файла ${SYNC_FILENAME}. ` +
+        "Сначала с другого устройства нажми «Сохранить в Drive»."
+    );
+  }
+  const content = await downloadDriveCfg(token, existing.id);
+  applySyncBlob(content);
+}
+
 // Resolve the branch we should dispatch workflow_dispatch against.
 //
 // We prefer GET /repos/{owner}/{repo}.default_branch, but if that returns a
@@ -369,6 +639,25 @@ function openSettings() {
   $("#cfg-branch").value = cfg.branch || "";
   $("#cfg-workflow").value = cfg.workflow || "download-to-drive.yml";
   $("#cfg-token").value = cfg.token || "";
+
+  // Pre-fill account / Drive / tracker fields from cfg so the user always
+  // sees their current state when they open the dialog. The Drive section
+  // remembers the SA JSON locally because it doubles as the account key.
+  const driveJsonEl = $("#drive-json");
+  if (driveJsonEl) driveJsonEl.value = cfg.driveSaJson || "";
+  const driveFolderEl = $("#drive-folder");
+  if (driveFolderEl) driveFolderEl.value = cfg.driveFolderId || "";
+  if (typeof updateServiceAccountEmail === "function") updateServiceAccountEmail();
+  for (const t of TRACKER_FIELDS || []) {
+    const u = $(t.userInput);
+    const p = $(t.passInput);
+    if (u && !u.value) u.value = cfg.trackers?.[t.id]?.user || "";
+    if (p && !p.value) p.value = cfg.trackers?.[t.id]?.pass || "";
+  }
+  const autoEl = $("#account-autopush");
+  if (autoEl) autoEl.checked = Boolean(cfg.accountAutoPush);
+  if (typeof updateAccountStatus === "function") updateAccountStatus();
+
   // Refresh the hint with whatever's already cached, then trigger an async
   // fetch in the background to populate it for the very first open.
   const cached = cfg.repo ? defaultBranchCache.get(cfg.repo) : null;
@@ -401,31 +690,44 @@ function bindSettings() {
     closeSettings();
   });
   $("#settings-save").addEventListener("click", () => {
-    const next = {
-      repo: $("#cfg-repo").value.trim(),
-      // Empty branch is allowed — it means “autodetect via API”.
-      branch: $("#cfg-branch").value.trim(),
-      workflow: $("#cfg-workflow").value.trim() || "download-to-drive.yml",
-      token: $("#cfg-token").value.trim(),
-    };
-    if (!/^[\w.-]+\/[\w.-]+$/.test(next.repo)) {
+    const repo = $("#cfg-repo").value.trim();
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
       toast("Репозиторий должен быть в формате owner/repo.", "error");
       return;
     }
-    if (next.token && !/^(github_pat_|gh[opsu]_)[A-Za-z0-9_]+$/.test(next.token)) {
+    const token = $("#cfg-token").value.trim();
+    if (token && !/^(github_pat_|gh[opsu]_)[A-Za-z0-9_]+$/.test(token)) {
       toast(
         "Внимание: токен не похож на GitHub PAT. Сохраняю всё равно.",
         "error",
         2500
       );
     }
-    cfg = next;
+    // Preserve existing fields we don't expose in the main form (Drive creds,
+    // tracker creds, autopush). Those are managed by their own sections / by
+    // applySyncBlob — but we still want them in cfg.
+    cfg = {
+      ...cfg,
+      repo,
+      branch: $("#cfg-branch").value.trim(),
+      workflow: $("#cfg-workflow").value.trim() || "download-to-drive.yml",
+      token,
+      accountAutoPush: $("#account-autopush")?.checked || false,
+    };
     saveCfg(cfg);
     ensureRepoLink();
     showSetupHint(!isReady());
     toast("Сохранено.", "success");
     closeSettings();
     refreshRuns(true);
+    // If the user opted in, push the cfg blob up to Drive in the background.
+    if (cfg.accountAutoPush && cfg.driveSaJson && cfg.driveFolderId) {
+      backupCfgToDrive()
+        .then(() => toast("Синхронизировано с Drive.", "success", 2000))
+        .catch((err) =>
+          toast(`Drive sync не сработал: ${err.message || err}`, "error")
+        );
+    }
   });
 }
 
@@ -590,11 +892,17 @@ function bindForm() {
           "Не получилось определить ветку репо — укажи её вручную в Настройках."
         );
       }
+      const dispatchedAt = Date.now();
       await gh.dispatchWorkflow({ ref, inputs });
       toast("Запущено — раннер качает…", "success");
       $("#url").value = "";
       // GitHub sometimes takes a beat to register the run.
       setTimeout(() => refreshRuns(true), 1500);
+      // Open the live progress modal so the user sees actual stage transitions.
+      openProgressDialog("Закидываем на Drive");
+      trackDispatchedRun(cfg.workflow, dispatchedAt, "Закидывание").catch(
+        () => {}
+      );
     } catch (err) {
       console.error(err);
       const msg = explainDispatchError(err, ref);
@@ -880,6 +1188,16 @@ function bindDriveUpload() {
         : "";
       setDriveStatus(`Секреты обновлены: ${uploaded.join(", ")}.${tail}`, "success");
       toast("Секреты Drive загружены в GitHub.", "success");
+      // Persist locally so account-sync can use the SA+folder as the
+      // "account key" across page reloads. We keep the JSON in localStorage
+      // but never push it to the Drive sync blob (it IS the key).
+      cfg = {
+        ...cfg,
+        driveSaJson: saInfo ? saInfo.json : cfg.driveSaJson,
+        driveFolderId: folderId || cfg.driveFolderId,
+      };
+      saveCfg(cfg);
+      if (typeof updateAccountStatus === "function") updateAccountStatus();
       jsonField.value = "";
       updateServiceAccountEmail();
     } catch (err) {
@@ -1004,6 +1322,19 @@ function bindTrackersUpload() {
         "success"
       );
       toast("Секреты трекеров загружены в GitHub.", "success");
+      // Mirror tracker creds into cfg so they sync to Drive and can be
+      // re-uploaded to GitHub Secrets on a fresh device without re-typing.
+      const trackers = { ...(cfg.trackers || {}) };
+      for (const t of TRACKER_FIELDS) {
+        const u = $(t.userInput).value.trim();
+        const p = $(t.passInput).value;
+        if (u && p) trackers[t.id] = { user: u, pass: p };
+      }
+      cfg = { ...cfg, trackers };
+      saveCfg(cfg);
+      if (cfg.accountAutoPush && cfg.driveSaJson && cfg.driveFolderId) {
+        backupCfgToDrive().catch(() => {});
+      }
       for (const t of TRACKER_FIELDS) {
         $(t.passInput).value = "";
       }
@@ -1211,6 +1542,7 @@ async function beamMagnet(item, btn) {
     if (!ref) {
       throw new Error("Не получилось определить ветку репо.");
     }
+    const dispatchedAt = Date.now();
     await gh.dispatchWorkflow({
       ref,
       inputs: {
@@ -1223,6 +1555,10 @@ async function beamMagnet(item, btn) {
     });
     toast("Запущено — раннер качает торрент…", "success");
     setTimeout(() => refreshRuns(true), 1500);
+    openProgressDialog(`Закидываем: ${item.title || "торрент"}`);
+    trackDispatchedRun(cfg.workflow, dispatchedAt, "Закидывание").catch(
+      () => {}
+    );
   } catch (err) {
     console.error(err);
     toast(`Ошибка: ${err.message || err}`, "error");
@@ -1470,6 +1806,266 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// ---------- Account-sync UI ----------
+function updateAccountStatus() {
+  const el = $("#account-status");
+  if (!el) return;
+  if (!cfg.driveSaJson || !cfg.driveFolderId) {
+    el.textContent =
+      "Заполни service-account JSON и Folder ID ниже — это и есть «логин» аккаунта.";
+    el.className = "mt-3 text-xs text-amber-300";
+    return;
+  }
+  el.textContent = "Drive подключён. «Сохранить в Drive» отправит настройки в файл film-beamer-config.json.";
+  el.className = "mt-3 text-xs text-emerald-300";
+}
+
+function bindAccountSync() {
+  const pull = $("#account-pull");
+  const push = $("#account-push");
+  if (!pull || !push) return;
+
+  pull.addEventListener("click", async () => {
+    if (!cfg.driveSaJson || !cfg.driveFolderId) {
+      toast(
+        "Сначала заполни service-account JSON и Folder ID ниже.",
+        "error"
+      );
+      return;
+    }
+    pull.disabled = true;
+    const old = pull.textContent;
+    pull.textContent = "Качаю…";
+    try {
+      await restoreCfgFromDrive();
+      // Re-render dialog from the freshly loaded cfg.
+      $("#cfg-repo").value = cfg.repo || "";
+      $("#cfg-branch").value = cfg.branch || "";
+      $("#cfg-workflow").value = cfg.workflow || "download-to-drive.yml";
+      $("#cfg-token").value = cfg.token || "";
+      for (const t of TRACKER_FIELDS) {
+        const u = $(t.userInput);
+        const p = $(t.passInput);
+        if (u) u.value = cfg.trackers?.[t.id]?.user || "";
+        if (p) p.value = cfg.trackers?.[t.id]?.pass || "";
+      }
+      ensureRepoLink();
+      showSetupHint(!isReady());
+      toast("Подгружено из Drive.", "success");
+    } catch (err) {
+      toast(`Не удалось: ${err.message || err}`, "error", 5000);
+    } finally {
+      pull.disabled = false;
+      pull.textContent = old;
+    }
+  });
+
+  push.addEventListener("click", async () => {
+    if (!cfg.driveSaJson || !cfg.driveFolderId) {
+      toast(
+        "Сначала заполни service-account JSON и Folder ID ниже.",
+        "error"
+      );
+      return;
+    }
+    push.disabled = true;
+    const old = push.textContent;
+    push.textContent = "Сохраняю…";
+    try {
+      await backupCfgToDrive();
+      toast("Сохранено в Drive.", "success");
+    } catch (err) {
+      toast(`Не удалось: ${err.message || err}`, "error", 5000);
+    } finally {
+      push.disabled = false;
+      push.textContent = old;
+    }
+  });
+}
+
+// On startup, if we already have SA + folder configured, transparently pull
+// the latest cfg from Drive and apply it. This is what makes the "log in
+// from another device" flow seamless: paste the same SA + folder once and
+// everything else materialises.
+async function bootstrapAccountSync() {
+  if (!cfg.driveSaJson || !cfg.driveFolderId) return;
+  try {
+    const token = await getDriveAccessToken();
+    const existing = await findDriveCfgFile(token, cfg.driveFolderId);
+    if (!existing) return;
+    const content = await downloadDriveCfg(token, existing.id);
+    applySyncBlob(content);
+    ensureRepoLink();
+    showSetupHint(!isReady());
+    refreshRuns(true);
+  } catch (err) {
+    console.warn("bootstrapAccountSync:", err);
+  }
+}
+
+// ---------- Run progress modal ----------
+//
+// Mirrors the step names in .github/workflows/download-to-drive.yml so the
+// UI can render "where are we" without parsing logs. The matchers are
+// intentionally loose so a workflow rename doesn't immediately break the UI.
+const DISPATCH_STAGES = [
+  { name: "Проверка инпутов", match: /validate|inputs/i },
+  { name: "Установка инструментов", match: /install|setup tools|deps/i },
+  { name: "Настройка rclone", match: /rclone|configure/i },
+  { name: "Скачивание", match: /download|yt-?dlp|aria2/i },
+  { name: "Загрузка на Drive", match: /upload|copy|drive/i },
+  { name: "Очистка", match: /cleanup|clean/i },
+];
+
+function renderProgressStages(steps) {
+  const list = $("#progress-stages");
+  if (!list) return;
+  list.innerHTML = "";
+  for (const stage of DISPATCH_STAGES) {
+    const step = (steps || []).find((s) => stage.match.test(s.name || ""));
+    let key = "pending";
+    if (step) {
+      if (step.status === "completed") key = step.conclusion || "success";
+      else if (step.status === "in_progress" || step.status === "queued")
+        key = "in_progress";
+    }
+    const li = document.createElement("li");
+    li.className = "flex items-center gap-2 text-sm";
+    const icon = document.createElement("span");
+    icon.className =
+      key === "in_progress"
+        ? "text-accent-300 animate-pulse"
+        : key === "failure" || key === "cancelled" || key === "timed_out"
+        ? "text-rose-300"
+        : key === "success" || key === "neutral"
+        ? "text-emerald-300"
+        : key === "skipped"
+        ? "text-slate-500"
+        : "text-slate-500";
+    icon.textContent = STAGE_ICONS[key] || "○";
+    const label = document.createElement("span");
+    label.className =
+      key === "pending" ? "text-slate-400" : "text-slate-100";
+    label.textContent = stage.name;
+    const sub = document.createElement("span");
+    sub.className = "ml-auto text-xs text-slate-500";
+    sub.textContent =
+      key === "in_progress"
+        ? "идёт"
+        : key === "success"
+        ? "готово"
+        : key === "failure"
+        ? "ошибка"
+        : key === "skipped"
+        ? "пропущен"
+        : key === "cancelled"
+        ? "отменён"
+        : "ждёт";
+    li.appendChild(icon);
+    li.appendChild(label);
+    li.appendChild(sub);
+    list.appendChild(li);
+  }
+}
+
+let _progressActive = false;
+
+function openProgressDialog(title) {
+  const dlg = $("#progress-dialog");
+  if (!dlg) return;
+  $("#progress-title").textContent = title || "Запуск раннера…";
+  $("#progress-subtitle").textContent =
+    "Ждём, пока GitHub зарегистрирует запуск…";
+  $("#progress-link").classList.add("hidden");
+  renderProgressStages([]);
+  dlg.classList.remove("hidden");
+  dlg.classList.add("flex");
+  _progressActive = true;
+}
+
+function closeProgressDialog() {
+  const dlg = $("#progress-dialog");
+  if (!dlg) return;
+  dlg.classList.add("hidden");
+  dlg.classList.remove("flex");
+  _progressActive = false;
+}
+
+function bindProgressDialog() {
+  const dlg = $("#progress-dialog");
+  if (!dlg) return;
+  $("#progress-close").addEventListener("click", closeProgressDialog);
+  $("#progress-hide").addEventListener("click", closeProgressDialog);
+  dlg.addEventListener("click", (e) => {
+    if (e.target.id === "progress-dialog") closeProgressDialog();
+  });
+}
+
+// Polls the workflow run we just dispatched and re-renders the modal.
+async function trackDispatchedRun(workflowFile, dispatchedAt, baseTitle) {
+  try {
+    const gh = new GitHubSearchClient(cfg);
+    let run = null;
+    const findDeadline = Date.now() + 60_000;
+    while (Date.now() < findDeadline && _progressActive) {
+      try {
+        const data = await gh.listRunsForWorkflow(workflowFile, {
+          event: "workflow_dispatch",
+        });
+        run = (data.workflow_runs || []).find(
+          (r) => new Date(r.created_at).getTime() >= dispatchedAt - 5000
+        );
+      } catch (err) {
+        console.warn("trackDispatchedRun list:", err);
+      }
+      if (run) break;
+      await sleep(2000);
+    }
+    if (!_progressActive) return;
+    if (!run) {
+      $("#progress-subtitle").textContent =
+        "Запуск не появился в API за минуту. Проверь Actions вручную.";
+      return;
+    }
+
+    $("#progress-title").textContent = baseTitle
+      ? `${baseTitle} · #${run.run_number}`
+      : `Запуск #${run.run_number}`;
+    const link = $("#progress-link");
+    link.href = run.html_url;
+    link.classList.remove("hidden");
+
+    const deadline = Date.now() + 30 * 60_000;
+    while (Date.now() < deadline && _progressActive) {
+      let data;
+      try {
+        data = await gh.getRunJobs(run.id);
+      } catch (err) {
+        console.warn("trackDispatchedRun jobs:", err);
+        await sleep(3000);
+        continue;
+      }
+      const jobs = data.jobs || [];
+      const job = jobs[0];
+      if (job) {
+        renderProgressStages(job.steps || []);
+        $("#progress-subtitle").textContent =
+          job.status === "completed"
+            ? `Готово: ${job.conclusion || "—"}`
+            : job.status === "in_progress"
+            ? "Идёт…"
+            : "В очереди — ждём раннер.";
+      }
+      const allDone =
+        jobs.length > 0 && jobs.every((j) => j.status === "completed");
+      if (allDone) return;
+      await sleep(3000);
+    }
+  } catch (err) {
+    console.warn("trackDispatchedRun:", err);
+  }
+}
+
 // ---------- Paste-from-clipboard helper ----------
 function bindPaste() {
   const btn = $("#paste-btn");
@@ -1500,6 +2096,8 @@ document.addEventListener("DOMContentLoaded", () => {
   bindSearch();
   bindUrlHint();
   bindQualityToggle();
+  bindAccountSync();
+  bindProgressDialog();
   $("#refresh-btn").addEventListener("click", () => refreshRuns(true));
 
   // Pre-fill repo from URL if not configured yet.
@@ -1512,6 +2110,9 @@ document.addEventListener("DOMContentLoaded", () => {
   showSetupHint(!isReady());
   refreshRuns();
   startPolling();
+  // Try pulling the latest cfg from Drive once on boot. Silent on failure
+  // (e.g. SA not yet configured, network issue).
+  bootstrapAccountSync();
 
   // If launched via the shortcut "?action=beam", focus URL field.
   try {
