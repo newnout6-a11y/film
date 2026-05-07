@@ -3788,6 +3788,50 @@ function bindSoundToggle() {
   });
 }
 
+// Wire the three "preview" buttons next to the sound toggle in Settings.
+// Even if the global "play sounds" switch is off, these buttons should
+// always play the requested sample so the user can hear what each event
+// sounds like. We force them through the underlying tone generator with
+// `.force` and add a subtle visual pulse so muted devices still get
+// feedback.
+function bindSoundPreviewButtons() {
+  const map = [
+    {
+      id: "#sound-test-ding",
+      play: () => Sounds.ding(true),
+      pulseClass: "sound-pulse-ok",
+    },
+    {
+      id: "#sound-test-buzz",
+      play: () => Sounds.buzz(true),
+      pulseClass: "sound-pulse-err",
+    },
+    {
+      id: "#sound-test-chirp",
+      play: () => Sounds.chirp(true),
+      pulseClass: "sound-pulse-ok",
+    },
+  ];
+  for (const item of map) {
+    const btn = $(item.id);
+    if (!btn) continue;
+    btn.addEventListener("click", () => {
+      try {
+        item.play();
+      } catch (err) {
+        console.warn("sound preview failed", err);
+      }
+      btn.classList.remove("sound-pulse-ok", "sound-pulse-err");
+      // Force a reflow so re-adding the class restarts the animation
+      void btn.offsetWidth;
+      btn.classList.add(item.pulseClass);
+      window.setTimeout(() => {
+        btn.classList.remove(item.pulseClass);
+      }, 900);
+    });
+  }
+}
+
 // ---------- Deep-link prefill ----------
 //
 // The page accepts these query parameters so other apps (including the PWA
@@ -4100,8 +4144,8 @@ const Sounds = (() => {
     return ctx;
   }
 
-  function tone({ freq, duration, type = "sine", gain = 0.05 }) {
-    if (!read()) return;
+  function tone({ freq, duration, type = "sine", gain = 0.05, force = false }) {
+    if (!force && !read()) return;
     const audio = ensureCtx();
     if (!audio) return;
     try {
@@ -4125,24 +4169,24 @@ const Sounds = (() => {
     }
   }
 
-  function ding() {
-    tone({ freq: 880, duration: 0.16, type: "sine", gain: 0.06 });
+  function ding(force = false) {
+    tone({ freq: 880, duration: 0.16, type: "sine", gain: 0.06, force });
     setTimeout(
-      () => tone({ freq: 1320, duration: 0.18, type: "sine", gain: 0.04 }),
+      () => tone({ freq: 1320, duration: 0.18, type: "sine", gain: 0.04, force }),
       90
     );
   }
 
-  function buzz() {
-    tone({ freq: 220, duration: 0.22, type: "sawtooth", gain: 0.05 });
+  function buzz(force = false) {
+    tone({ freq: 220, duration: 0.22, type: "sawtooth", gain: 0.05, force });
     setTimeout(
-      () => tone({ freq: 165, duration: 0.28, type: "sawtooth", gain: 0.05 }),
+      () => tone({ freq: 165, duration: 0.28, type: "sawtooth", gain: 0.05, force }),
       130
     );
   }
 
-  function chirp() {
-    tone({ freq: 660, duration: 0.08, type: "triangle", gain: 0.03 });
+  function chirp(force = false) {
+    tone({ freq: 660, duration: 0.08, type: "triangle", gain: 0.03, force });
   }
 
   return { read, set, ding, buzz, chirp };
