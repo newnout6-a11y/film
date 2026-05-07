@@ -128,24 +128,27 @@
             <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Ссылка</span>
             <input
               id="url"
-              type="url"
+              type="text"
               required
               autocomplete="url"
               autocapitalize="off"
               autocorrect="off"
               spellcheck="false"
               inputmode="url"
-              placeholder="https://example.com/movie.mkv"
+              placeholder="YouTube / Rutube / прямая ссылка / magnet:?…"
               class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-4 py-3 text-base text-slate-100 placeholder:text-slate-500 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
             />
-            <button
-              type="button"
-              id="paste-btn"
-              class="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10"
-            >
-              <span>📋</span>
-              Вставить из буфера
-            </button>
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                id="paste-btn"
+                class="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10"
+              >
+                <span>📋</span>
+                Вставить из буфера
+              </button>
+              <span id="url-hint" class="text-xs text-slate-400"></span>
+            </div>
           </label>
 
           <div class="mt-4 grid gap-4 sm:grid-cols-2">
@@ -169,44 +172,36 @@
             </label>
           </div>
 
-          <details class="mt-4 rounded-xl border border-white/5 bg-ink-900/60 p-3 text-sm text-slate-300">
-            <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-slate-400">
-              Дополнительно
-            </summary>
-            <div class="mt-3 grid gap-4 sm:grid-cols-3">
-              <label class="block">
-                <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Режим</span>
-                <select
-                  id="mode"
-                  class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
-                >
-                  <option value="auto">Авто</option>
-                  <option value="aria2">Прямое скачивание (aria2)</option>
-                  <option value="ytdlp">Видео-сайт (yt-dlp)</option>
-                  <option value="curl">curl (одно соединение)</option>
-                </select>
-              </label>
-              <label class="block">
-                <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Формат yt-dlp</span>
-                <input
-                  id="ytdlp_format"
-                  type="text"
-                  value="bv*+ba/b"
-                  class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
-                />
-              </label>
-              <label class="block">
-                <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Лимит (МБ, 0 = ∞)</span>
-                <input
-                  id="max_size_mb"
-                  type="number"
-                  min="0"
-                  value="0"
-                  class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
-                />
-              </label>
-            </div>
-          </details>
+          <label class="mt-4 block">
+            <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Качество</span>
+            <select
+              id="quality"
+              class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+            >
+              <option value="auto">Авто (лучшее)</option>
+              <option value="1080p">1080p и меньше</option>
+              <option value="720p">720p и меньше</option>
+              <option value="480p">480p (для медленного инета)</option>
+              <option value="audio">Только аудио (mp3)</option>
+              <option value="custom">Своё (yt-dlp format)</option>
+            </select>
+            <span class="mt-1 block text-xs text-slate-500">
+              Для прямых ссылок и торрентов это поле игнорируется — качай что есть.
+            </span>
+          </label>
+
+          <label id="ytdlp-format-wrap" class="mt-4 hidden">
+            <span class="text-xs font-medium uppercase tracking-wider text-slate-400">
+              yt-dlp format
+              <span class="ml-1 text-slate-500 normal-case">(см. <a href="https://github.com/yt-dlp/yt-dlp#format-selection" target="_blank" rel="noreferrer noopener" class="underline decoration-dotted underline-offset-2">доку</a>)</span>
+            </span>
+            <input
+              id="ytdlp_format"
+              type="text"
+              value="bv*+ba/b"
+              class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 font-mono text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+            />
+          </label>
 
           <div class="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p id="form-error" class="text-sm text-rose-300/90"></p>
