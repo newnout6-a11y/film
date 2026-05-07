@@ -1,0 +1,36 @@
+{
+  "name": "Film Beamer",
+  "short_name": "Beamer",
+  "description": "Beam files to Google Drive over GitHub Actions' fast pipe.",
+  "id": "/film/",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "portrait",
+  "background_color": "#07080c",
+  "theme_color": "#0b0d14",
+  "categories": ["utilities", "productivity"],
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "New beam",
+      "short_name": "Beam",
+      "description": "Start a new download",
+      "url": "./?action=beam"
+    }
+  ]
+}

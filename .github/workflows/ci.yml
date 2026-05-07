@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate workflow YAML
+        run: |
+          set -euo pipefail
+          python3 -c "import yaml,sys,glob; [yaml.safe_load(open(f)) for f in glob.glob('.github/workflows/*.yml')]"
+
+      - name: HTML / JS / CSS sanity (no broken references)
+        run: |
+          set -euo pipefail
+          # All href/src refs in docs/index.html exist (relative ones only)
+          missing=0
+          while IFS= read -r ref; do
+            [ -z "$ref" ] && continue
+            if [[ "$ref" =~ ^(https?:|data:|#) ]]; then
+              continue
+            fi
+            path="docs/${ref#./}"
+            if [ ! -f "$path" ]; then
+              echo "::error file=docs/index.html::missing referenced file: $ref"
+              missing=$((missing + 1))
+            fi
+          done < <(grep -oE '(href|src)="[^"]+"' docs/index.html | sed -E 's/.*="([^"]+)"/\1/')
+          if [ "$missing" -gt 0 ]; then exit 1; fi
+
+      - name: JS syntax check
+        run: |
+          set -euo pipefail
+          node --check docs/app.js
