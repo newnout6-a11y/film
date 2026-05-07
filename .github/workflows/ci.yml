@@ -20,14 +20,19 @@ jobs:
       - name: HTML / JS / CSS sanity (no broken references)
         run: |
           set -euo pipefail
-          # All href/src refs in docs/index.html exist (relative ones only)
+          # All href/src refs in docs/index.html exist (relative ones only).
+          # Strip query strings (?v=...) and fragments (#...) since those are
+          # cache-busting / anchor hints, not part of the on-disk filename.
           missing=0
           while IFS= read -r ref; do
             [ -z "$ref" ] && continue
-            if [[ "$ref" =~ ^(https?:|data:|#) ]]; then
+            if [[ "$ref" =~ ^(https?:|data:|mailto:|#) ]]; then
               continue
             fi
-            path="docs/${ref#./}"
+            clean="${ref%%\?*}"
+            clean="${clean%%#*}"
+            [ -z "$clean" ] && continue
+            path="docs/${clean#./}"
             if [ ! -f "$path" ]; then
               echo "::error file=docs/index.html::missing referenced file: $ref"
               missing=$((missing + 1))
