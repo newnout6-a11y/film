@@ -3578,6 +3578,18 @@ function bindSettingsValidators() {
 function bindKeyboardShortcuts() {
   document.addEventListener("keydown", (e) => {
     const mod = e.ctrlKey || e.metaKey;
+    // Don't trigger letter-based shortcuts while the user is typing inside
+    // an input/textarea — they collide with native browser behaviours
+    // (Ctrl+Q in some text fields toggles spellcheck, etc.). Special keys
+    // like Esc and Ctrl+K still fire because they are the explicit "jump
+    // to URL" / "close dialog" gestures users expect.
+    const target = e.target;
+    const inField =
+      target instanceof HTMLElement &&
+      (target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable);
+
     if (mod && (e.key === "k" || e.key === "K")) {
       e.preventDefault();
       const url = $("#url");
@@ -3594,7 +3606,54 @@ function bindKeyboardShortcuts() {
     }
     if (mod && e.key === "/") {
       e.preventDefault();
+      if (typeof HelpDialog !== "undefined" && HelpDialog && HelpDialog.open) {
+        HelpDialog.open();
+      } else {
+        Diagnostics.open();
+      }
+      return;
+    }
+    if (mod && !inField && (e.key === "d" || e.key === "D")) {
+      e.preventDefault();
       Diagnostics.open();
+      return;
+    }
+    if (mod && !inField && (e.key === "h" || e.key === "H")) {
+      e.preventDefault();
+      if (typeof RunHistory !== "undefined" && RunHistory && RunHistory.open) {
+        RunHistory.open();
+      }
+      return;
+    }
+    if (mod && !inField && (e.key === "q" || e.key === "Q")) {
+      e.preventDefault();
+      if (typeof BulkQueue !== "undefined" && BulkQueue && BulkQueue.open) {
+        BulkQueue.open();
+      }
+      return;
+    }
+    if (mod && !inField && (e.key === "p" || e.key === "P")) {
+      e.preventDefault();
+      if (
+        typeof WorkflowPresets !== "undefined" &&
+        WorkflowPresets &&
+        WorkflowPresets.open
+      ) {
+        WorkflowPresets.open();
+      }
+      return;
+    }
+    if (
+      mod &&
+      e.shiftKey &&
+      !inField &&
+      (e.key === "l" || e.key === "L" || e.key === "Л" || e.key === "л")
+    ) {
+      e.preventDefault();
+      const cur = Theme.get();
+      const next =
+        cur === "dark" ? "light" : cur === "light" ? "auto" : "dark";
+      Theme.set(next);
       return;
     }
     if (e.key === "Escape") {
@@ -3612,6 +3671,119 @@ function bindKeyboardShortcuts() {
       if (dd && !dd.classList.contains("hidden")) {
         Diagnostics.close();
       }
+      const hd = $("#history-dialog");
+      if (
+        hd &&
+        !hd.classList.contains("hidden") &&
+        typeof RunHistory !== "undefined" &&
+        RunHistory.close
+      ) {
+        RunHistory.close();
+      }
+      const qd = $("#queue-dialog");
+      if (
+        qd &&
+        !qd.classList.contains("hidden") &&
+        typeof BulkQueue !== "undefined" &&
+        BulkQueue.close
+      ) {
+        BulkQueue.close();
+      }
+      const psd = $("#preset-dialog");
+      if (
+        psd &&
+        !psd.classList.contains("hidden") &&
+        typeof WorkflowPresets !== "undefined" &&
+        WorkflowPresets.close
+      ) {
+        WorkflowPresets.close();
+      }
+      const help = $("#help-dialog");
+      if (
+        help &&
+        !help.classList.contains("hidden") &&
+        typeof HelpDialog !== "undefined" &&
+        HelpDialog.close
+      ) {
+        HelpDialog.close();
+      }
+    }
+  });
+}
+
+// Wire the new header action buttons (Help / Queue / History) and the
+// preset save/manage buttons that sit next to the form. The corresponding
+// modules each ship their own bind() that wires their dialog's internal
+// behaviour; this function only handles the *triggers* that live outside
+// the dialogs.
+function bindHeaderActionButtons() {
+  const help = $("#open-help");
+  if (help) {
+    help.addEventListener("click", () => {
+      if (typeof HelpDialog !== "undefined" && HelpDialog && HelpDialog.open) {
+        HelpDialog.open();
+      }
+    });
+  }
+  const queue = $("#open-queue");
+  if (queue) {
+    queue.addEventListener("click", () => {
+      if (typeof BulkQueue !== "undefined" && BulkQueue && BulkQueue.open) {
+        BulkQueue.open();
+      }
+    });
+  }
+  const history = $("#open-history");
+  if (history) {
+    history.addEventListener("click", () => {
+      if (
+        typeof RunHistory !== "undefined" &&
+        RunHistory &&
+        RunHistory.open
+      ) {
+        RunHistory.open();
+      }
+    });
+  }
+  const presetSave = $("#preset-save");
+  if (presetSave) {
+    presetSave.addEventListener("click", () => {
+      if (
+        typeof WorkflowPresets !== "undefined" &&
+        WorkflowPresets &&
+        WorkflowPresets.saveFromForm
+      ) {
+        WorkflowPresets.saveFromForm();
+      }
+    });
+  }
+  const presetManage = $("#preset-manage");
+  if (presetManage) {
+    presetManage.addEventListener("click", () => {
+      if (
+        typeof WorkflowPresets !== "undefined" &&
+        WorkflowPresets &&
+        WorkflowPresets.open
+      ) {
+        WorkflowPresets.open();
+      }
+    });
+  }
+}
+
+// Wire the in-Settings sound on/off checkbox to the Sounds module. Kept
+// separate from the rest so it can be lazily created if missing.
+function bindSoundToggle() {
+  const cb = $("#sound-toggle");
+  if (!cb) return;
+  cb.checked = Sounds.read();
+  cb.addEventListener("change", () => {
+    Sounds.set(cb.checked);
+    if (cb.checked) {
+      Sounds.ding();
+      toast("Звуки включены", "info", 1500);
+    } else {
+      toast("Звуки выключены", "info", 1500);
     }
   });
 }
@@ -3738,8 +3910,1985 @@ function bindRefreshButton() {
   });
 }
 
+// ---------- Theme ----------
+//
+// Three modes: "auto" follows the OS, "dark" forces the existing palette
+// (which is what users had before this module landed), "light" inverts
+// surfaces and text. We toggle a class on <html> and let CSS variables in
+// style.css do the heavy lifting. The choice is persisted in localStorage,
+// independent of the Drive-synced cfg blob, because theme is a per-device
+// preference (a phone in the sun wants different settings than a desktop).
+const Theme = (() => {
+  const KEY = "film-beamer.theme.v1";
+  const VALID = new Set(["auto", "dark", "light"]);
+  const listeners = new Set();
+  let media = null;
+
+  function read() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (raw && VALID.has(raw)) return raw;
+    } catch {
+      /* localStorage may be disabled */
+    }
+    return "auto";
+  }
+
+  function write(value) {
+    try {
+      localStorage.setItem(KEY, value);
+    } catch {
+      /* noop */
+    }
+  }
+
+  function effective(mode) {
+    if (mode === "auto") {
+      try {
+        return window.matchMedia("(prefers-color-scheme: light)").matches
+          ? "light"
+          : "dark";
+      } catch {
+        return "dark";
+      }
+    }
+    return mode;
+  }
+
+  function apply(mode) {
+    const html = document.documentElement;
+    const eff = effective(mode);
+    html.classList.toggle("theme-light", eff === "light");
+    html.classList.toggle("theme-dark", eff === "dark");
+    html.dataset.theme = eff;
+    html.dataset.themeChoice = mode;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) {
+      meta.setAttribute("content", eff === "light" ? "#f3f5fa" : "#0b0d14");
+    }
+    const colorScheme = document.querySelector('meta[name="color-scheme"]');
+    if (colorScheme) {
+      colorScheme.setAttribute(
+        "content",
+        eff === "light" ? "light" : "dark"
+      );
+    }
+    for (const cb of listeners) {
+      try {
+        cb(mode, eff);
+      } catch (err) {
+        ErrorLog.push(`Theme listener: ${err.message || err}`);
+      }
+    }
+  }
+
+  function set(mode) {
+    if (!VALID.has(mode)) return;
+    write(mode);
+    apply(mode);
+    syncButtons(mode);
+    toast(
+      mode === "auto"
+        ? "Тема: авто (следует за системой)"
+        : mode === "light"
+        ? "Тема: светлая"
+        : "Тема: тёмная",
+      "info",
+      2000
+    );
+  }
+
+  function syncButtons(mode) {
+    const buttons = $$("[data-theme-set]");
+    for (const btn of buttons) {
+      const target = btn.getAttribute("data-theme-set");
+      btn.classList.toggle("theme-btn-active", target === mode);
+      btn.setAttribute("aria-pressed", target === mode ? "true" : "false");
+    }
+    const compact = $("#theme-toggle");
+    if (compact) {
+      const eff = effective(mode);
+      compact.textContent = eff === "light" ? "🌞" : "🌙";
+      compact.setAttribute(
+        "title",
+        mode === "auto"
+          ? "Тема: авто"
+          : mode === "light"
+          ? "Тема: светлая"
+          : "Тема: тёмная"
+      );
+    }
+  }
+
+  function bind() {
+    apply(read());
+    syncButtons(read());
+    if (window.matchMedia) {
+      try {
+        media = window.matchMedia("(prefers-color-scheme: light)");
+        const handler = () => {
+          if (read() === "auto") apply("auto");
+        };
+        if (media.addEventListener) media.addEventListener("change", handler);
+        else if (media.addListener) media.addListener(handler);
+      } catch {
+        /* noop */
+      }
+    }
+    for (const btn of $$("[data-theme-set]")) {
+      btn.addEventListener("click", () => set(btn.getAttribute("data-theme-set")));
+    }
+    const compact = $("#theme-toggle");
+    if (compact) {
+      compact.addEventListener("click", () => {
+        const cur = read();
+        const next =
+          cur === "dark" ? "light" : cur === "light" ? "auto" : "dark";
+        set(next);
+      });
+    }
+  }
+
+  return {
+    bind,
+    set,
+    get: read,
+    effective: () => effective(read()),
+    onChange(cb) {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+  };
+})();
+
+// ---------- Sounds ----------
+//
+// Tiny WebAudio "ding" / "buzz" cues for run completion. We deliberately
+// avoid any audio assets (asset bundling adds CI complexity for one feature)
+// and synthesise the tones in browser. Honors a localStorage opt-out.
+const Sounds = (() => {
+  const KEY = "film-beamer.sound.v1";
+  let ctx = null;
+
+  function read() {
+    try {
+      const v = localStorage.getItem(KEY);
+      if (v === "off") return false;
+    } catch {
+      /* noop */
+    }
+    return true;
+  }
+
+  function set(on) {
+    try {
+      localStorage.setItem(KEY, on ? "on" : "off");
+    } catch {
+      /* noop */
+    }
+  }
+
+  function ensureCtx() {
+    if (ctx) return ctx;
+    try {
+      const Ctor = window.AudioContext || window.webkitAudioContext;
+      if (!Ctor) return null;
+      ctx = new Ctor();
+    } catch {
+      return null;
+    }
+    return ctx;
+  }
+
+  function tone({ freq, duration, type = "sine", gain = 0.05 }) {
+    if (!read()) return;
+    const audio = ensureCtx();
+    if (!audio) return;
+    try {
+      if (audio.state === "suspended") audio.resume().catch(() => {});
+      const osc = audio.createOscillator();
+      const env = audio.createGain();
+      osc.type = type;
+      osc.frequency.value = freq;
+      env.gain.setValueAtTime(0, audio.currentTime);
+      env.gain.linearRampToValueAtTime(gain, audio.currentTime + 0.01);
+      env.gain.exponentialRampToValueAtTime(
+        0.0001,
+        audio.currentTime + duration
+      );
+      osc.connect(env);
+      env.connect(audio.destination);
+      osc.start();
+      osc.stop(audio.currentTime + duration);
+    } catch {
+      /* swallow audio errors */
+    }
+  }
+
+  function ding() {
+    tone({ freq: 880, duration: 0.16, type: "sine", gain: 0.06 });
+    setTimeout(
+      () => tone({ freq: 1320, duration: 0.18, type: "sine", gain: 0.04 }),
+      90
+    );
+  }
+
+  function buzz() {
+    tone({ freq: 220, duration: 0.22, type: "sawtooth", gain: 0.05 });
+    setTimeout(
+      () => tone({ freq: 165, duration: 0.28, type: "sawtooth", gain: 0.05 }),
+      130
+    );
+  }
+
+  function chirp() {
+    tone({ freq: 660, duration: 0.08, type: "triangle", gain: 0.03 });
+  }
+
+  return { read, set, ding, buzz, chirp };
+})();
+
+// ---------- Notifications ----------
+//
+// Best-effort wrapper around the Notification API. Silently no-ops on
+// browsers that don't expose it (most iOS Safari versions, etc.). The
+// permission prompt is only triggered when the user explicitly opts in,
+// never on page load.
+const Notifications = (() => {
+  const KEY = "film-beamer.notify.v1";
+
+  function supported() {
+    return typeof window !== "undefined" && "Notification" in window;
+  }
+
+  function status() {
+    if (!supported()) return "unsupported";
+    return Notification.permission;
+  }
+
+  function readPref() {
+    try {
+      return localStorage.getItem(KEY) === "on";
+    } catch {
+      return false;
+    }
+  }
+
+  function writePref(on) {
+    try {
+      localStorage.setItem(KEY, on ? "on" : "off");
+    } catch {
+      /* noop */
+    }
+  }
+
+  async function request() {
+    if (!supported()) {
+      toast("Браузер не поддерживает уведомления", "warn");
+      return false;
+    }
+    try {
+      const result = await Notification.requestPermission();
+      const ok = result === "granted";
+      writePref(ok);
+      if (ok) {
+        toast("Уведомления включены — пинг по завершении", "ok");
+      } else {
+        toast(
+          result === "denied"
+            ? "Доступ к уведомлениям запрещён в настройках браузера"
+            : "Уведомления не включены",
+          "warn"
+        );
+      }
+      return ok;
+    } catch (err) {
+      ErrorLog.push(`Notifications.request: ${err.message || err}`);
+      return false;
+    }
+  }
+
+  function disable() {
+    writePref(false);
+    toast("Уведомления выключены", "info", 2000);
+  }
+
+  function notify(title, options = {}) {
+    if (!readPref()) return null;
+    if (status() !== "granted") return null;
+    try {
+      const note = new Notification(title, {
+        icon: "./icon.svg",
+        badge: "./icon.svg",
+        tag: "film-beamer",
+        renotify: true,
+        ...options,
+      });
+      note.onclick = () => {
+        try {
+          window.focus();
+        } catch {
+          /* noop */
+        }
+        note.close();
+        if (options.url) {
+          try {
+            window.open(options.url, "_blank", "noopener,noreferrer");
+          } catch {
+            /* noop */
+          }
+        }
+      };
+      return note;
+    } catch (err) {
+      ErrorLog.push(`Notifications.notify: ${err.message || err}`);
+      return null;
+    }
+  }
+
+  function vibrate(pattern) {
+    if (!navigator.vibrate) return;
+    try {
+      navigator.vibrate(pattern);
+    } catch {
+      /* noop */
+    }
+  }
+
+  function announceSuccess(meta) {
+    const title = "Заброс готов";
+    const body = meta && meta.filename
+      ? `${meta.filename} в Drive`
+      : "Файл загружен на Google Drive";
+    notify(title, { body, url: meta && meta.url });
+    vibrate([60, 40, 60]);
+    Sounds.ding();
+  }
+
+  function announceFailure(meta) {
+    const title = "Ошибка заброса";
+    const body = meta && meta.message
+      ? meta.message
+      : "Нажми, чтобы открыть лог раннера";
+    notify(title, { body, url: meta && meta.url });
+    vibrate([200, 100, 200]);
+    Sounds.buzz();
+  }
+
+  function bind() {
+    const enable = $("#notify-enable");
+    const disableBtn = $("#notify-disable");
+    const status = $("#notify-status");
+    const sound = $("#sound-toggle");
+    const refreshStatus = () => {
+      if (!status) return;
+      if (!supported()) {
+        status.textContent = "не поддерживается";
+        status.className = "text-xs text-slate-500";
+        return;
+      }
+      const perm = Notification.permission;
+      const enabled = readPref();
+      status.textContent = enabled
+        ? "включены"
+        : perm === "denied"
+        ? "запрещены"
+        : "выключены";
+      status.className = `text-xs ${
+        enabled
+          ? "text-emerald-300"
+          : perm === "denied"
+          ? "text-rose-300"
+          : "text-slate-400"
+      }`;
+    };
+    refreshStatus();
+    if (enable) enable.addEventListener("click", () => request().then(refreshStatus));
+    if (disableBtn) disableBtn.addEventListener("click", () => {
+      disable();
+      refreshStatus();
+    });
+    if (sound) {
+      sound.checked = Sounds.read();
+      sound.addEventListener("change", () => {
+        Sounds.set(sound.checked);
+        if (sound.checked) Sounds.chirp();
+      });
+    }
+  }
+
+  return {
+    supported,
+    status,
+    readPref,
+    writePref,
+    request,
+    disable,
+    notify,
+    announceSuccess,
+    announceFailure,
+    bind,
+  };
+})();
+
+// ---------- Run history ----------
+//
+// `RunHistory` is the persistent counterpart to the live runs list. Where
+// the runs panel re-renders from `gh.listRuns()` on every poll, this
+// localStorage-backed store remembers every run we *initiated* through this
+// app — including their inputs (URL, filename, subfolder, quality), so
+// re-beam works even if the run scrolled off the GitHub list.
+const RunHistory = (() => {
+  const KEY = "film-beamer.history.v1";
+  const MAX = 200;
+  const listeners = new Set();
+
+  function read() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(
+        (entry) => entry && typeof entry === "object" && entry.id
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  function write(list) {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(list.slice(0, MAX)));
+    } catch {
+      /* over quota or disabled */
+    }
+  }
+
+  function notify() {
+    const snap = read();
+    for (const cb of listeners) {
+      try {
+        cb(snap);
+      } catch (err) {
+        ErrorLog.push(`RunHistory listener: ${err.message || err}`);
+      }
+    }
+  }
+
+  function add(entry) {
+    if (!entry || !entry.id) return;
+    const list = read().filter((e) => e.id !== entry.id);
+    list.unshift({
+      ...entry,
+      addedAt: Date.now(),
+    });
+    write(list);
+    notify();
+  }
+
+  function update(id, patch) {
+    const list = read();
+    const idx = list.findIndex((e) => e.id === id);
+    if (idx < 0) return;
+    list[idx] = { ...list[idx], ...patch, updatedAt: Date.now() };
+    write(list);
+    notify();
+  }
+
+  function remove(id) {
+    const list = read().filter((e) => e.id !== id);
+    write(list);
+    notify();
+  }
+
+  function clear() {
+    write([]);
+    notify();
+  }
+
+  function findByDispatchedAt(ts) {
+    const list = read();
+    // Pending entries that haven't been linked to a run id yet store dispatchedAt.
+    return list.find((e) => !e.runId && e.dispatchedAt === ts);
+  }
+
+  function statsFor(list) {
+    const now = Date.now();
+    const dayAgo = now - 24 * 60 * 60_000;
+    const weekAgo = now - 7 * 24 * 60 * 60_000;
+    let total = list.length;
+    let success = 0;
+    let failure = 0;
+    let inProgress = 0;
+    let dayCount = 0;
+    let weekCount = 0;
+    let durSum = 0;
+    let durCount = 0;
+    for (const entry of list) {
+      const conclusion = (entry.conclusion || "").toLowerCase();
+      if (conclusion === "success") success++;
+      else if (
+        conclusion === "failure" ||
+        conclusion === "timed_out" ||
+        conclusion === "cancelled"
+      ) {
+        failure++;
+      } else if (!conclusion) {
+        inProgress++;
+      }
+      const ts = entry.addedAt || entry.dispatchedAt || 0;
+      if (ts >= dayAgo) dayCount++;
+      if (ts >= weekAgo) weekCount++;
+      if (entry.startedAt && entry.completedAt) {
+        durSum += entry.completedAt - entry.startedAt;
+        durCount++;
+      }
+    }
+    return {
+      total,
+      success,
+      failure,
+      inProgress,
+      dayCount,
+      weekCount,
+      avgDurationMs: durCount ? Math.round(durSum / durCount) : 0,
+      successRate: total
+        ? Math.round((success / Math.max(1, total - inProgress)) * 100)
+        : 0,
+    };
+  }
+
+  function fmtDuration(ms) {
+    if (!ms || ms < 0) return "—";
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s} с`;
+    const m = Math.floor(s / 60);
+    const ss = s % 60;
+    if (m < 60) return `${m}:${String(ss).padStart(2, "0")}`;
+    const h = Math.floor(m / 60);
+    const mm = m % 60;
+    return `${h}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+  }
+
+  function shortUrl(raw) {
+    if (!raw) return "—";
+    try {
+      const u = new URL(raw);
+      const host = u.hostname.replace(/^www\./, "");
+      const path = (u.pathname || "/").slice(0, 30);
+      return `${host}${path}${u.pathname.length > 30 ? "…" : ""}`;
+    } catch {
+      return raw.length > 60 ? `${raw.slice(0, 57)}…` : raw;
+    }
+  }
+
+  function statusPill(entry) {
+    const concl = (entry.conclusion || "").toLowerCase();
+    if (concl === "success")
+      return { text: "успех", cls: "history-pill-ok" };
+    if (concl === "failure")
+      return { text: "ошибка", cls: "history-pill-bad" };
+    if (concl === "cancelled")
+      return { text: "отменён", cls: "history-pill-warn" };
+    if (concl === "timed_out")
+      return { text: "таймаут", cls: "history-pill-bad" };
+    if ((entry.status || "").toLowerCase() === "in_progress")
+      return { text: "идёт", cls: "history-pill-info" };
+    if ((entry.status || "").toLowerCase() === "queued")
+      return { text: "в очереди", cls: "history-pill-info" };
+    if (!entry.runId) return { text: "ждёт", cls: "history-pill-pending" };
+    return { text: entry.conclusion || "—", cls: "history-pill-pending" };
+  }
+
+  function applyFilter(list, query) {
+    const q = (query || "").trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((entry) => {
+      const fields = [
+        entry.url,
+        entry.filename,
+        entry.subfolder,
+        entry.quality,
+        entry.conclusion,
+        entry.status,
+        entry.runNumber ? `#${entry.runNumber}` : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return fields.includes(q);
+    });
+  }
+
+  function applyStatusFilter(list, status) {
+    if (!status || status === "all") return list;
+    return list.filter((entry) => {
+      const concl = (entry.conclusion || "").toLowerCase();
+      const s = (entry.status || "").toLowerCase();
+      if (status === "success") return concl === "success";
+      if (status === "failure")
+        return (
+          concl === "failure" || concl === "timed_out" || concl === "cancelled"
+        );
+      if (status === "in_progress") return !concl && (s === "in_progress" || s === "queued");
+      if (status === "pending") return !entry.runId;
+      return true;
+    });
+  }
+
+  function render() {
+    const root = $("#history-list");
+    if (!root) return;
+    const q = $("#history-search") ? $("#history-search").value : "";
+    const status = $("#history-filter") ? $("#history-filter").value : "all";
+    const all = read();
+    const filtered = applyStatusFilter(applyFilter(all, q), status);
+    const empty = $("#history-empty");
+    const counter = $("#history-count");
+    if (counter) {
+      counter.textContent =
+        filtered.length === all.length
+          ? `${all.length}`
+          : `${filtered.length}/${all.length}`;
+    }
+    if (empty) empty.classList.toggle("hidden", filtered.length > 0);
+    root.innerHTML = "";
+    if (!filtered.length) {
+      renderStats(all);
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for (const entry of filtered) {
+      frag.appendChild(renderRow(entry));
+    }
+    root.appendChild(frag);
+    renderStats(all);
+  }
+
+  function renderStats(list) {
+    const stats = statsFor(list);
+    const els = {
+      total: $("#stats-total"),
+      success: $("#stats-success"),
+      failure: $("#stats-failure"),
+      day: $("#stats-day"),
+      week: $("#stats-week"),
+      rate: $("#stats-rate"),
+      duration: $("#stats-duration"),
+    };
+    if (els.total) els.total.textContent = String(stats.total);
+    if (els.success) els.success.textContent = String(stats.success);
+    if (els.failure) els.failure.textContent = String(stats.failure);
+    if (els.day) els.day.textContent = String(stats.dayCount);
+    if (els.week) els.week.textContent = String(stats.weekCount);
+    if (els.rate)
+      els.rate.textContent = stats.total ? `${stats.successRate}%` : "—";
+    if (els.duration)
+      els.duration.textContent = fmtDuration(stats.avgDurationMs);
+  }
+
+  function renderRow(entry) {
+    const li = document.createElement("li");
+    li.className = "history-row";
+    li.dataset.id = entry.id;
+
+    const head = document.createElement("div");
+    head.className = "history-row-head";
+    const pill = statusPill(entry);
+    const badge = document.createElement("span");
+    badge.className = `history-pill ${pill.cls}`;
+    badge.textContent = pill.text;
+    head.appendChild(badge);
+
+    const title = document.createElement("span");
+    title.className = "history-title";
+    title.textContent = entry.filename || shortUrl(entry.url);
+    head.appendChild(title);
+
+    if (entry.runNumber != null) {
+      const num = document.createElement("span");
+      num.className = "history-run-num";
+      num.textContent = `#${entry.runNumber}`;
+      head.appendChild(num);
+    }
+
+    const time = document.createElement("span");
+    time.className = "history-time";
+    time.textContent = timeAgo(
+      new Date(entry.addedAt || entry.dispatchedAt || 0).toISOString()
+    );
+    head.appendChild(time);
+    li.appendChild(head);
+
+    const meta = document.createElement("div");
+    meta.className = "history-meta";
+    meta.appendChild(metaPair("URL", shortUrl(entry.url), entry.url));
+    if (entry.subfolder) meta.appendChild(metaPair("Папка", entry.subfolder));
+    if (entry.quality) meta.appendChild(metaPair("Качество", entry.quality));
+    if (entry.startedAt && entry.completedAt) {
+      meta.appendChild(
+        metaPair(
+          "Время",
+          fmtDuration(entry.completedAt - entry.startedAt)
+        )
+      );
+    }
+    li.appendChild(meta);
+
+    const actions = document.createElement("div");
+    actions.className = "history-actions";
+
+    if (entry.runUrl) {
+      const open = document.createElement("a");
+      open.href = entry.runUrl;
+      open.target = "_blank";
+      open.rel = "noreferrer noopener";
+      open.className = "history-btn history-btn-link";
+      open.textContent = "Открыть";
+      actions.appendChild(open);
+    }
+
+    const repeat = document.createElement("button");
+    repeat.type = "button";
+    repeat.className = "history-btn history-btn-repeat";
+    repeat.textContent = "Перезапустить";
+    repeat.addEventListener("click", () => repeatEntry(entry));
+    actions.appendChild(repeat);
+
+    if (entry.url) {
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "history-btn";
+      copy.textContent = "Копировать URL";
+      copy.addEventListener("click", () => copyUrl(entry.url));
+      actions.appendChild(copy);
+    }
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "history-btn history-btn-remove";
+    remove.textContent = "Удалить";
+    remove.addEventListener("click", () => {
+      RunHistory.remove(entry.id);
+      toast("Запись удалена", "info", 2000);
+    });
+    actions.appendChild(remove);
+
+    li.appendChild(actions);
+    return li;
+  }
+
+  function metaPair(k, v, hover) {
+    const wrap = document.createElement("span");
+    wrap.className = "history-meta-pair";
+    if (hover) wrap.title = hover;
+    const key = document.createElement("span");
+    key.className = "history-meta-key";
+    key.textContent = `${k}:`;
+    wrap.appendChild(key);
+    const val = document.createElement("span");
+    val.className = "history-meta-val";
+    val.textContent = v;
+    wrap.appendChild(val);
+    return wrap;
+  }
+
+  function copyUrl(text) {
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => toast("URL скопирован", "ok", 1800),
+        () => toast("Не удалось скопировать", "warn", 2400)
+      );
+      return;
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      toast("URL скопирован", "ok", 1800);
+    } catch {
+      toast("Не удалось скопировать", "warn", 2400);
+    }
+  }
+
+  function repeatEntry(entry) {
+    const url = $("#url");
+    const filename = $("#filename");
+    const subfolder = $("#subfolder");
+    const quality = $("#quality");
+    const ytdlpFormat = $("#ytdlp_format");
+    if (url) url.value = entry.url || "";
+    if (filename) filename.value = entry.filename || "";
+    if (subfolder) subfolder.value = entry.subfolder || "";
+    if (quality) {
+      quality.value = entry.quality || "auto";
+      quality.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    if (ytdlpFormat) ytdlpFormat.value = entry.ytdlp_format || "";
+    if (url) {
+      url.dispatchEvent(new Event("input", { bubbles: true }));
+      url.focus();
+    }
+    closeHistoryDialog();
+    toast("Поля заполнены — нажми «Закинуть»", "info", 2400);
+  }
+
+  function bind() {
+    const list = $("#history-list");
+    if (!list) return;
+    listeners.add((entries) => {
+      void entries;
+      render();
+    });
+    const search = $("#history-search");
+    if (search) search.addEventListener("input", render);
+    const filter = $("#history-filter");
+    if (filter) filter.addEventListener("change", render);
+    const clearBtn = $("#history-clear");
+    if (clearBtn)
+      clearBtn.addEventListener("click", () => {
+        if (!read().length) return;
+        if (
+          !confirm(
+            "Удалить всю историю запусков? Это локальный список — на GitHub он останется."
+          )
+        )
+          return;
+        clear();
+        toast("История очищена", "info", 2200);
+      });
+    const exportBtn = $("#history-export");
+    if (exportBtn)
+      exportBtn.addEventListener("click", () => {
+        const blob = new Blob([JSON.stringify(read(), null, 2)], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `film-beamer-history-${new Date()
+          .toISOString()
+          .replace(/[:.]/g, "-")}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+        toast("Файл сохранён", "ok", 2200);
+      });
+    const openBtn = $("#open-history");
+    if (openBtn) openBtn.addEventListener("click", openHistoryDialog);
+    const closeBtn = $("#history-close");
+    if (closeBtn) closeBtn.addEventListener("click", closeHistoryDialog);
+    const dialog = $("#history-dialog");
+    if (dialog)
+      dialog.addEventListener("click", (e) => {
+        if (e.target === dialog) closeHistoryDialog();
+      });
+    render();
+  }
+
+  function openHistoryDialog() {
+    const dlg = $("#history-dialog");
+    if (!dlg) return;
+    dlg.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+    render();
+    setTimeout(() => {
+      const search = $("#history-search");
+      if (search) search.focus();
+    }, 30);
+  }
+
+  function closeHistoryDialog() {
+    const dlg = $("#history-dialog");
+    if (!dlg) return;
+    dlg.classList.add("hidden");
+    document.body.style.overflow = "";
+  }
+
+  return {
+    add,
+    update,
+    remove,
+    clear,
+    read,
+    findByDispatchedAt,
+    bind,
+    render,
+    open: openHistoryDialog,
+    close: closeHistoryDialog,
+  };
+})();
+
+// ---------- Workflow presets ----------
+//
+// A "preset" is a saved combination of form inputs (filename template,
+// subfolder, quality, custom yt-dlp format). The user picks a preset name
+// from a dropdown and the form snaps to that preset's values. Presets live
+// in localStorage and roll up into the Drive sync blob so they follow the
+// user across devices.
+const WorkflowPresets = (() => {
+  const KEY = "film-beamer.presets.v1";
+  const listeners = new Set();
+
+  function read() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((p) => p && typeof p === "object" && p.name);
+    } catch {
+      return [];
+    }
+  }
+
+  function write(list) {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(list));
+    } catch {
+      /* over quota / disabled */
+    }
+  }
+
+  function notify() {
+    for (const cb of listeners) {
+      try {
+        cb(read());
+      } catch (err) {
+        ErrorLog.push(`Presets listener: ${err.message || err}`);
+      }
+    }
+  }
+
+  function add(preset) {
+    if (!preset || !preset.name) return;
+    const list = read().filter((p) => p.name !== preset.name);
+    list.push({
+      ...preset,
+      createdAt: preset.createdAt || Date.now(),
+      updatedAt: Date.now(),
+    });
+    list.sort((a, b) => a.name.localeCompare(b.name, "ru"));
+    write(list);
+    notify();
+  }
+
+  function remove(name) {
+    write(read().filter((p) => p.name !== name));
+    notify();
+  }
+
+  function find(name) {
+    return read().find((p) => p.name === name) || null;
+  }
+
+  function snapshotForm() {
+    return {
+      filename: ($("#filename") && $("#filename").value.trim()) || "",
+      subfolder: ($("#subfolder") && $("#subfolder").value.trim()) || "",
+      quality: ($("#quality") && $("#quality").value) || "auto",
+      ytdlp_format:
+        ($("#ytdlp_format") && $("#ytdlp_format").value.trim()) || "",
+    };
+  }
+
+  function applyToForm(preset) {
+    if (!preset) return;
+    const filename = $("#filename");
+    const subfolder = $("#subfolder");
+    const quality = $("#quality");
+    const ytdlp = $("#ytdlp_format");
+    if (filename) filename.value = preset.filename || "";
+    if (subfolder) subfolder.value = preset.subfolder || "";
+    if (quality) {
+      quality.value = preset.quality || "auto";
+      quality.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    if (ytdlp) ytdlp.value = preset.ytdlp_format || "";
+  }
+
+  function renderSelect() {
+    const select = $("#preset-select");
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "— Пресет —";
+    select.appendChild(placeholder);
+    for (const preset of read()) {
+      const opt = document.createElement("option");
+      opt.value = preset.name;
+      opt.textContent = preset.name;
+      select.appendChild(opt);
+    }
+    if (current) select.value = current;
+  }
+
+  function renderList() {
+    const root = $("#preset-list");
+    if (!root) return;
+    const list = read();
+    root.innerHTML = "";
+    const empty = $("#preset-empty");
+    if (empty) empty.classList.toggle("hidden", list.length > 0);
+    for (const preset of list) {
+      const card = document.createElement("div");
+      card.className = "preset-card";
+
+      const head = document.createElement("div");
+      head.className = "preset-card-head";
+      const title = document.createElement("span");
+      title.className = "preset-card-title";
+      title.textContent = preset.name;
+      head.appendChild(title);
+      if (preset.updatedAt) {
+        const ts = document.createElement("span");
+        ts.className = "preset-card-ts";
+        ts.textContent = timeAgo(new Date(preset.updatedAt).toISOString());
+        head.appendChild(ts);
+      }
+      card.appendChild(head);
+
+      const body = document.createElement("div");
+      body.className = "preset-card-body";
+      body.appendChild(presetField("Файл", preset.filename || "—"));
+      body.appendChild(presetField("Папка", preset.subfolder || "—"));
+      body.appendChild(presetField("Качество", preset.quality || "auto"));
+      if (preset.ytdlp_format) {
+        body.appendChild(presetField("yt-dlp", preset.ytdlp_format));
+      }
+      card.appendChild(body);
+
+      const actions = document.createElement("div");
+      actions.className = "preset-card-actions";
+      const apply = document.createElement("button");
+      apply.type = "button";
+      apply.className = "preset-btn preset-btn-apply";
+      apply.textContent = "Применить";
+      apply.addEventListener("click", () => {
+        applyToForm(preset);
+        toast(`Пресет «${preset.name}» применён`, "ok", 2000);
+      });
+      actions.appendChild(apply);
+      const update = document.createElement("button");
+      update.type = "button";
+      update.className = "preset-btn";
+      update.textContent = "Обновить из формы";
+      update.addEventListener("click", () => {
+        add({ ...preset, ...snapshotForm() });
+        toast(`Пресет «${preset.name}» обновлён`, "ok", 2200);
+      });
+      actions.appendChild(update);
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "preset-btn preset-btn-remove";
+      del.textContent = "Удалить";
+      del.addEventListener("click", () => {
+        if (!confirm(`Удалить пресет «${preset.name}»?`)) return;
+        remove(preset.name);
+        toast("Пресет удалён", "info", 2000);
+      });
+      actions.appendChild(del);
+      card.appendChild(actions);
+      root.appendChild(card);
+    }
+  }
+
+  function presetField(k, v) {
+    const wrap = document.createElement("div");
+    wrap.className = "preset-field";
+    const key = document.createElement("span");
+    key.className = "preset-field-key";
+    key.textContent = `${k}:`;
+    wrap.appendChild(key);
+    const val = document.createElement("span");
+    val.className = "preset-field-val";
+    val.textContent = v;
+    wrap.appendChild(val);
+    return wrap;
+  }
+
+  function bind() {
+    const select = $("#preset-select");
+    const saveBtn = $("#preset-save");
+    const openBtn = $("#preset-manage");
+    const closeBtn = $("#preset-close");
+    const dialog = $("#preset-dialog");
+    listeners.add(() => {
+      renderSelect();
+      renderList();
+    });
+    if (select) {
+      select.addEventListener("change", () => {
+        const preset = find(select.value);
+        if (preset) {
+          applyToForm(preset);
+          toast(`Пресет «${preset.name}»`, "info", 1800);
+        }
+      });
+    }
+    if (saveBtn) {
+      saveBtn.addEventListener("click", () => {
+        const name = (
+          prompt("Имя пресета (видно только тебе)") || ""
+        ).trim();
+        if (!name) return;
+        add({ name, ...snapshotForm() });
+        toast(`Пресет «${name}» сохранён`, "ok", 2400);
+      });
+    }
+    if (openBtn) openBtn.addEventListener("click", openDialog);
+    if (closeBtn) closeBtn.addEventListener("click", closeDialog);
+    if (dialog)
+      dialog.addEventListener("click", (e) => {
+        if (e.target === dialog) closeDialog();
+      });
+    renderSelect();
+    renderList();
+  }
+
+  function openDialog() {
+    const dlg = $("#preset-dialog");
+    if (!dlg) return;
+    dlg.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+    renderList();
+  }
+
+  function closeDialog() {
+    const dlg = $("#preset-dialog");
+    if (!dlg) return;
+    dlg.classList.add("hidden");
+    document.body.style.overflow = "";
+  }
+
+  return {
+    read,
+    write,
+    add,
+    remove,
+    find,
+    bind,
+    open: openDialog,
+    close: closeDialog,
+  };
+})();
+
+// ---------- Bulk queue ----------
+//
+// Lets the user paste 50 URLs at once and dispatches them sequentially with
+// a configurable concurrency limit (default 1, max 3 — anything higher
+// chokes the runner Drive uploads). The queue persists across reloads so a
+// page refresh doesn't lose 30 in-flight items.
+const BulkQueue = (() => {
+  const KEY = "film-beamer.queue.v1";
+  const STATUS = {
+    PENDING: "pending",
+    DISPATCHING: "dispatching",
+    RUNNING: "running",
+    DONE: "done",
+    FAILED: "failed",
+    SKIPPED: "skipped",
+    CANCELLED: "cancelled",
+  };
+  const listeners = new Set();
+  let running = false;
+  let concurrency = 1;
+  let abortRequested = false;
+
+  function read() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((e) => e && e.url);
+    } catch {
+      return [];
+    }
+  }
+
+  function write(list) {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(list));
+    } catch {
+      /* noop */
+    }
+  }
+
+  function notify() {
+    const snap = read();
+    for (const cb of listeners) {
+      try {
+        cb(snap);
+      } catch (err) {
+        ErrorLog.push(`BulkQueue listener: ${err.message || err}`);
+      }
+    }
+  }
+
+  function add(items) {
+    if (!Array.isArray(items) || !items.length) return 0;
+    const list = read();
+    const seen = new Set(list.map((e) => e.url));
+    let added = 0;
+    for (const item of items) {
+      const url = (item && item.url) || "";
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      list.push({
+        id: `q${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        url,
+        filename: item.filename || "",
+        subfolder: item.subfolder || "",
+        quality: item.quality || "auto",
+        ytdlp_format: item.ytdlp_format || "",
+        status: STATUS.PENDING,
+        attempts: 0,
+        addedAt: Date.now(),
+        updatedAt: Date.now(),
+        error: "",
+      });
+      added++;
+    }
+    write(list);
+    notify();
+    return added;
+  }
+
+  function update(id, patch) {
+    const list = read();
+    const idx = list.findIndex((e) => e.id === id);
+    if (idx < 0) return;
+    list[idx] = { ...list[idx], ...patch, updatedAt: Date.now() };
+    write(list);
+    notify();
+  }
+
+  function remove(id) {
+    write(read().filter((e) => e.id !== id));
+    notify();
+  }
+
+  function clearDone() {
+    const list = read().filter(
+      (e) => e.status !== STATUS.DONE && e.status !== STATUS.SKIPPED
+    );
+    write(list);
+    notify();
+  }
+
+  function clearAll() {
+    write([]);
+    notify();
+  }
+
+  function abort() {
+    abortRequested = true;
+    toast("Очередь остановится после текущего элемента", "info", 2400);
+  }
+
+  function status() {
+    return {
+      running,
+      abortRequested,
+      concurrency,
+      total: read().length,
+      pending: read().filter((e) => e.status === STATUS.PENDING).length,
+      done: read().filter(
+        (e) => e.status === STATUS.DONE || e.status === STATUS.SKIPPED
+      ).length,
+      failed: read().filter((e) => e.status === STATUS.FAILED).length,
+    };
+  }
+
+  function setConcurrency(n) {
+    const v = Math.max(1, Math.min(3, parseInt(n, 10) || 1));
+    concurrency = v;
+    return v;
+  }
+
+  function parsePastedList(text) {
+    if (!text) return [];
+    const lines = text
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const out = [];
+    for (const line of lines) {
+      // Each line may be just a URL, or "URL | filename | subfolder | quality"
+      const parts = line.split(/\s*[|\t]\s*/);
+      const item = { url: parts[0] || "" };
+      if (parts[1]) item.filename = parts[1];
+      if (parts[2]) item.subfolder = parts[2];
+      if (parts[3]) item.quality = parts[3];
+      const cls = classifyUrl(item.url).kind;
+      if (cls === "empty" || cls === "invalid" || cls === "kinopoisk") continue;
+      out.push(item);
+    }
+    return out;
+  }
+
+  async function dispatchOne(entry, gh, ref) {
+    update(entry.id, {
+      status: STATUS.DISPATCHING,
+      attempts: (entry.attempts || 0) + 1,
+      error: "",
+    });
+    const inputs = {
+      url: entry.url,
+      filename: entry.filename || "",
+      subfolder: entry.subfolder || "",
+      quality: entry.quality || "auto",
+      ytdlp_format: entry.ytdlp_format || "",
+    };
+    try {
+      await gh.dispatchWorkflow({ ref, inputs });
+      update(entry.id, {
+        status: STATUS.RUNNING,
+        dispatchedAt: new Date().toISOString(),
+      });
+      try {
+        RunHistory.add({
+          id: `bulk-${entry.id}`,
+          dispatchedAt: new Date().toISOString(),
+          ...inputs,
+          source: "bulk",
+        });
+      } catch {
+        /* RunHistory may not be loaded yet on edge cases */
+      }
+      return { ok: true };
+    } catch (err) {
+      const msg = explainDispatchError(err, ref);
+      ErrorLog.push(`Очередь: ${msg}`);
+      update(entry.id, {
+        status: STATUS.FAILED,
+        error: msg.slice(0, 240),
+      });
+      return { ok: false, error: msg };
+    }
+  }
+
+  async function start() {
+    if (running) return;
+    if (!isReady()) {
+      toast("Сначала задай репо и токен в Настройках", "warn", 3200);
+      return;
+    }
+    running = true;
+    abortRequested = false;
+    notify();
+    toast("Очередь запущена", "info", 1800);
+    const gh = new GitHubClient(cfg);
+    let ref;
+    try {
+      ref = await resolveBranch();
+    } catch (err) {
+      ErrorLog.push(`Очередь: не удалось определить ветку — ${err.message || err}`);
+      running = false;
+      notify();
+      return;
+    }
+    try {
+      while (!abortRequested) {
+        const list = read();
+        const next = list.find((e) => e.status === STATUS.PENDING);
+        if (!next) break;
+        const result = await dispatchOne(next, gh, ref);
+        if (result.ok) {
+          update(next.id, { status: STATUS.DONE });
+        }
+        // Rate-limit pacing: 4s between dispatches when concurrency = 1.
+        await new Promise((r) => setTimeout(r, 4000 / concurrency));
+      }
+    } finally {
+      running = false;
+      abortRequested = false;
+      notify();
+      toast("Очередь завершена", "ok", 2400);
+    }
+  }
+
+  function render() {
+    const root = $("#queue-list");
+    if (!root) return;
+    const list = read();
+    const empty = $("#queue-empty");
+    if (empty) empty.classList.toggle("hidden", list.length > 0);
+    const counter = $("#queue-counter");
+    const s = status();
+    if (counter) {
+      counter.textContent = list.length
+        ? `${s.done}/${list.length} · ошибок ${s.failed}`
+        : "пусто";
+    }
+    root.innerHTML = "";
+    for (const entry of list) {
+      root.appendChild(renderRow(entry));
+    }
+    const startBtn = $("#queue-start");
+    const abortBtn = $("#queue-abort");
+    if (startBtn) {
+      startBtn.disabled = running || !s.pending;
+      startBtn.textContent = running
+        ? "Идёт…"
+        : s.pending
+        ? `Запустить (${s.pending})`
+        : "Нет ожидающих";
+    }
+    if (abortBtn) abortBtn.disabled = !running;
+  }
+
+  function renderRow(entry) {
+    const row = document.createElement("li");
+    row.className = `queue-row queue-status-${entry.status}`;
+    row.dataset.id = entry.id;
+
+    const head = document.createElement("div");
+    head.className = "queue-row-head";
+    const pill = document.createElement("span");
+    pill.className = `queue-pill queue-pill-${entry.status}`;
+    pill.textContent = labelForStatus(entry.status);
+    head.appendChild(pill);
+    const url = document.createElement("span");
+    url.className = "queue-url";
+    url.textContent = shortenUrl(entry.url);
+    url.title = entry.url;
+    head.appendChild(url);
+    if (entry.attempts > 1) {
+      const att = document.createElement("span");
+      att.className = "queue-att";
+      att.textContent = `попытка ${entry.attempts}`;
+      head.appendChild(att);
+    }
+    row.appendChild(head);
+
+    if (entry.filename || entry.subfolder || entry.quality !== "auto") {
+      const meta = document.createElement("div");
+      meta.className = "queue-meta";
+      if (entry.filename) meta.appendChild(metaPair("файл", entry.filename));
+      if (entry.subfolder) meta.appendChild(metaPair("папка", entry.subfolder));
+      if (entry.quality && entry.quality !== "auto")
+        meta.appendChild(metaPair("качество", entry.quality));
+      row.appendChild(meta);
+    }
+
+    if (entry.error) {
+      const err = document.createElement("div");
+      err.className = "queue-error";
+      err.textContent = entry.error;
+      row.appendChild(err);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "queue-actions";
+    if (entry.status === STATUS.FAILED) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "queue-btn";
+      retry.textContent = "Повторить";
+      retry.addEventListener("click", () =>
+        update(entry.id, { status: STATUS.PENDING, error: "" })
+      );
+      actions.appendChild(retry);
+    }
+    if (
+      entry.status === STATUS.PENDING ||
+      entry.status === STATUS.FAILED
+    ) {
+      const skip = document.createElement("button");
+      skip.type = "button";
+      skip.className = "queue-btn";
+      skip.textContent = "Пропустить";
+      skip.addEventListener("click", () =>
+        update(entry.id, { status: STATUS.SKIPPED })
+      );
+      actions.appendChild(skip);
+    }
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "queue-btn queue-btn-remove";
+    drop.textContent = "Удалить";
+    drop.addEventListener("click", () => remove(entry.id));
+    actions.appendChild(drop);
+    row.appendChild(actions);
+    return row;
+  }
+
+  function metaPair(k, v) {
+    const wrap = document.createElement("span");
+    wrap.className = "queue-meta-pair";
+    const key = document.createElement("span");
+    key.className = "queue-meta-key";
+    key.textContent = `${k}:`;
+    wrap.appendChild(key);
+    const val = document.createElement("span");
+    val.className = "queue-meta-val";
+    val.textContent = v;
+    wrap.appendChild(val);
+    return wrap;
+  }
+
+  function shortenUrl(raw) {
+    if (!raw) return "—";
+    if (raw.length > 80) return `${raw.slice(0, 77)}…`;
+    return raw;
+  }
+
+  function labelForStatus(s) {
+    switch (s) {
+      case STATUS.PENDING:
+        return "ожидает";
+      case STATUS.DISPATCHING:
+        return "отправка…";
+      case STATUS.RUNNING:
+        return "запущен";
+      case STATUS.DONE:
+        return "готово";
+      case STATUS.FAILED:
+        return "ошибка";
+      case STATUS.SKIPPED:
+        return "пропущен";
+      case STATUS.CANCELLED:
+        return "отменён";
+      default:
+        return s;
+    }
+  }
+
+  function bind() {
+    listeners.add(() => render());
+    const open = $("#open-queue");
+    const close = $("#queue-close");
+    const dialog = $("#queue-dialog");
+    if (open) open.addEventListener("click", () => openDialog());
+    if (close) close.addEventListener("click", () => closeDialog());
+    if (dialog)
+      dialog.addEventListener("click", (e) => {
+        if (e.target === dialog) closeDialog();
+      });
+
+    const importBtn = $("#queue-import");
+    if (importBtn)
+      importBtn.addEventListener("click", () => {
+        const ta = $("#queue-input");
+        if (!ta) return;
+        const items = parsePastedList(ta.value);
+        if (!items.length) {
+          toast("Не нашёл валидных URL", "warn", 2400);
+          return;
+        }
+        const added = add(items);
+        ta.value = "";
+        toast(`Добавлено в очередь: ${added}`, "ok", 2400);
+      });
+    const startBtn = $("#queue-start");
+    if (startBtn)
+      startBtn.addEventListener("click", () => {
+        start().catch((err) =>
+          ErrorLog.push(`Очередь: ${err.message || err}`)
+        );
+      });
+    const abortBtn = $("#queue-abort");
+    if (abortBtn) abortBtn.addEventListener("click", () => abort());
+    const clearDoneBtn = $("#queue-clear-done");
+    if (clearDoneBtn)
+      clearDoneBtn.addEventListener("click", () => {
+        clearDone();
+        toast("Готовые удалены", "info", 1800);
+      });
+    const clearAllBtn = $("#queue-clear-all");
+    if (clearAllBtn)
+      clearAllBtn.addEventListener("click", () => {
+        if (!read().length) return;
+        if (!confirm("Очистить очередь полностью?")) return;
+        clearAll();
+        toast("Очередь очищена", "info", 1800);
+      });
+    const concSel = $("#queue-concurrency");
+    if (concSel) {
+      concSel.value = String(concurrency);
+      concSel.addEventListener("change", () => {
+        const v = setConcurrency(concSel.value);
+        toast(`Параллельных дозвонов: ${v}`, "info", 1800);
+      });
+    }
+    render();
+  }
+
+  function openDialog() {
+    const dlg = $("#queue-dialog");
+    if (!dlg) return;
+    dlg.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+    render();
+    setTimeout(() => {
+      const ta = $("#queue-input");
+      if (ta) ta.focus();
+    }, 30);
+  }
+
+  function closeDialog() {
+    const dlg = $("#queue-dialog");
+    if (!dlg) return;
+    dlg.classList.add("hidden");
+    document.body.style.overflow = "";
+  }
+
+  return {
+    read,
+    add,
+    remove,
+    clearDone,
+    clearAll,
+    start,
+    abort,
+    status,
+    bind,
+    open: openDialog,
+    close: closeDialog,
+  };
+})();
+
+// ---------- Help dialog ----------
+//
+// Reference dialog with keyboard shortcuts, common gotchas and links to the
+// upstream tools (yt-dlp, aria2c) so the user can grep their own answers.
+const HelpDialog = (() => {
+  function open() {
+    const dlg = $("#help-dialog");
+    if (!dlg) return;
+    dlg.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+  }
+
+  function close() {
+    const dlg = $("#help-dialog");
+    if (!dlg) return;
+    dlg.classList.add("hidden");
+    document.body.style.overflow = "";
+  }
+
+  function bind() {
+    const openBtn = $("#open-help");
+    const closeBtn = $("#help-close");
+    const dialog = $("#help-dialog");
+    if (openBtn) openBtn.addEventListener("click", open);
+    if (closeBtn) closeBtn.addEventListener("click", close);
+    if (dialog)
+      dialog.addEventListener("click", (e) => {
+        if (e.target === dialog) close();
+      });
+  }
+
+  return { open, close, bind };
+})();
+
+// ---------- Settings export / import ----------
+//
+// JSON dump of cfg (without secret-account keys redacted) so the user can
+// copy their setup between machines without having to re-paste 30 things in
+// Settings. Drive sync covers 90% of this need; this is a manual escape
+// hatch for "I want to email this to a friend" or "I'm switching browsers".
+const SettingsBackup = (() => {
+  const REDACTED = ["token"];
+  const PRIVATE = ["driveSaJson"];
+
+  function snapshot(opts = {}) {
+    const out = {};
+    for (const [k, v] of Object.entries(cfg)) {
+      if (opts.includeSecrets || (!REDACTED.includes(k) && !PRIVATE.includes(k))) {
+        out[k] = v;
+      }
+    }
+    return {
+      _kind: "film-beamer-settings",
+      _version: 1,
+      _exportedAt: new Date().toISOString(),
+      cfg: out,
+      presets: WorkflowPresets.read(),
+      recentUrls: typeof RecentURLs !== "undefined" ? RecentURLs.list() : [],
+      theme: Theme.get(),
+    };
+  }
+
+  function exportToFile(opts = {}) {
+    const blob = new Blob([JSON.stringify(snapshot(opts), null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `film-beamer-settings-${new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-")}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    toast("Настройки сохранены в файл", "ok", 2400);
+  }
+
+  function exportToClipboard(opts = {}) {
+    const text = JSON.stringify(snapshot(opts), null, 2);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => toast("Настройки скопированы в буфер", "ok", 2400),
+        () => toast("Не получилось копировать", "warn", 2400)
+      );
+    } else {
+      toast("Clipboard API недоступен", "warn");
+    }
+  }
+
+  function applySnapshot(snap) {
+    if (!snap || snap._kind !== "film-beamer-settings") {
+      throw new Error("Это не дамп Film Beamer");
+    }
+    if (snap.cfg && typeof snap.cfg === "object") {
+      for (const [k, v] of Object.entries(snap.cfg)) {
+        if (k in cfg && !REDACTED.includes(k)) {
+          cfg[k] = v;
+        }
+      }
+      saveCfg(cfg);
+    }
+    if (Array.isArray(snap.presets)) {
+      WorkflowPresets.write(snap.presets);
+    }
+    if (snap.theme) Theme.set(snap.theme);
+    toast("Настройки применены — перезагрузи страницу", "ok", 4500);
+  }
+
+  async function importFromFile(file) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      applySnapshot(JSON.parse(text));
+    } catch (err) {
+      ErrorLog.push(`Импорт настроек: ${err.message || err}`);
+      toast(`Ошибка: ${err.message || err}`, "error", 4500);
+    }
+  }
+
+  function bind() {
+    const exportBtn = $("#cfg-export");
+    const exportClipBtn = $("#cfg-export-clipboard");
+    const importBtn = $("#cfg-import");
+    const fileInput = $("#cfg-import-file");
+    if (exportBtn) exportBtn.addEventListener("click", () => exportToFile());
+    if (exportClipBtn)
+      exportClipBtn.addEventListener("click", () => exportToClipboard());
+    if (importBtn && fileInput) {
+      importBtn.addEventListener("click", () => fileInput.click());
+      fileInput.addEventListener("change", (e) => {
+        const f = e.target.files && e.target.files[0];
+        if (f) importFromFile(f);
+        fileInput.value = "";
+      });
+    }
+  }
+
+  return {
+    snapshot,
+    exportToFile,
+    exportToClipboard,
+    importFromFile,
+    applySnapshot,
+    bind,
+  };
+})();
+
+// ---------- Extended URL classifier ----------
+//
+// On top of `classifyUrl`, this exposes structured metadata about a URL:
+// detected category, suggested filename, recommended quality preset, and a
+// human-readable hint. Used by the URL hint label and BulkQueue parser.
+const URLClassifierExt = (() => {
+  const VIDEO_HOSTS = new Set([
+    "youtube.com",
+    "m.youtube.com",
+    "youtu.be",
+    "vimeo.com",
+    "tiktok.com",
+    "twitter.com",
+    "x.com",
+    "twitch.tv",
+    "dailymotion.com",
+    "rutube.ru",
+    "vk.com",
+    "bilibili.com",
+    "facebook.com",
+    "instagram.com",
+    "ok.ru",
+    "coub.com",
+    "9gag.com",
+    "reddit.com",
+    "imgur.com",
+  ]);
+
+  const TRACKER_HOSTS = new Set([
+    "rutracker.org",
+    "rutracker.net",
+    "kinozal.tv",
+    "kinozal.guru",
+    "nnmclub.to",
+    "nnm-club.me",
+    "1337x.to",
+    "1337x.tw",
+    "thepiratebay.org",
+    "thepiratebay10.org",
+  ]);
+
+  function hostOf(raw) {
+    try {
+      return new URL(raw).hostname.toLowerCase();
+    } catch {
+      return "";
+    }
+  }
+
+  function category(raw) {
+    const url = (raw || "").trim();
+    if (!url) return "empty";
+    if (/^magnet:\?/i.test(url)) return "magnet";
+    if (/\.torrent(\?|$)/i.test(url)) return "torrent";
+    if (!/^https?:\/\//i.test(url)) return "invalid";
+    const host = hostOf(url);
+    for (const h of TRACKER_HOSTS) {
+      if (host === h || host.endsWith("." + h)) return "tracker-page";
+    }
+    for (const h of VIDEO_HOSTS) {
+      if (host === h || host.endsWith("." + h)) return "video";
+    }
+    if (host.endsWith("kinopoisk.ru")) return "kinopoisk";
+    if (
+      /\.(mp4|mkv|webm|avi|mov|m4v|mp3|m4a|flac|wav|ogg|opus|zip|rar|7z|iso|pdf|epub|cbr|cbz)(\?|$)/i.test(
+        url
+      )
+    ) {
+      return "direct";
+    }
+    return "unknown";
+  }
+
+  function suggestedFilename(raw) {
+    if (!raw) return "";
+    try {
+      const u = new URL(raw);
+      const seg = u.pathname.split("/").filter(Boolean).pop() || "";
+      if (!seg) return "";
+      // Strip extension if it's an unhelpful one (.html, .php, etc.)
+      return seg.replace(/\.(html?|php|aspx?)$/i, "");
+    } catch {
+      return "";
+    }
+  }
+
+  function suggestedQuality(raw) {
+    const cat = category(raw);
+    if (cat === "magnet" || cat === "torrent" || cat === "direct") return "auto";
+    if (cat !== "video") return "auto";
+    const host = hostOf(raw);
+    // YouTube benefits from 1080p as a default; others stay on auto.
+    if (host.includes("youtube") || host.includes("youtu.be")) return "1080p";
+    return "auto";
+  }
+
+  function describeCategory(cat) {
+    switch (cat) {
+      case "video":
+        return "Видео-сайт — yt-dlp.";
+      case "magnet":
+        return "Magnet — aria2c (BitTorrent).";
+      case "torrent":
+        return ".torrent — aria2c (BitTorrent).";
+      case "direct":
+        return "Прямая ссылка на файл — aria2c.";
+      case "tracker-page":
+        return "Страница раздачи. Скопируй с неё magnet или .torrent.";
+      case "kinopoisk":
+        return "Кинопоиск не хостит видео.";
+      case "invalid":
+        return "Ссылка должна начинаться с http(s):// или magnet:?";
+      case "empty":
+        return "";
+      case "unknown":
+      default:
+        return "Попробую yt-dlp как универсальный извлекатель.";
+    }
+  }
+
+  function metadata(raw) {
+    const cat = category(raw);
+    return {
+      category: cat,
+      host: hostOf(raw),
+      filename: suggestedFilename(raw),
+      quality: suggestedQuality(raw),
+      hint: describeCategory(cat),
+    };
+  }
+
+  return { category, metadata, suggestedFilename, suggestedQuality };
+})();
+
+// ---------- Auto-fill suggestions ----------
+//
+// When the URL field changes and the filename is empty, propose a value the
+// user can accept with one Tab keypress. Doesn't fight a user who has typed
+// something — only fills empty fields.
+function bindAutoFillSuggestions() {
+  const url = $("#url");
+  const filename = $("#filename");
+  const quality = $("#quality");
+  if (!url || !filename) return;
+  let lastUserFilename = "";
+  filename.addEventListener("input", () => {
+    lastUserFilename = filename.value;
+  });
+  url.addEventListener("input", () => {
+    const meta = URLClassifierExt.metadata(url.value.trim());
+    // Only autofill when the field is empty *and* the user hasn't typed
+    // anything custom there yet.
+    if (!filename.value || filename.value === lastUserFilename) {
+      const suggested = meta.filename;
+      if (suggested && suggested !== filename.value) {
+        filename.placeholder = `авто: ${suggested}`;
+      } else {
+        filename.placeholder = "авто (имя сохраним из источника)";
+      }
+    }
+    if (
+      quality &&
+      meta.quality &&
+      meta.quality !== "auto" &&
+      quality.value === "auto"
+    ) {
+      // Just hint via title; never override silently.
+      quality.title = `Подсказка: ${meta.quality} для ${meta.host}`;
+    }
+  });
+}
+
 // ---------- bootstrap ----------
 document.addEventListener("DOMContentLoaded", () => {
+  // Apply the user's saved theme as early as possible, before the rest of
+  // the UI binds, so the page doesn't briefly flash dark→light when light
+  // mode is selected.
+  Theme.bind();
+
   // Bring up the Service Worker update channel as early as we can so a
   // freshly deployed version can prompt the user even if other init steps
   // throw.
@@ -3765,7 +5914,16 @@ document.addEventListener("DOMContentLoaded", () => {
   bindKeyboardShortcuts();
   bindRecentUrlCapture();
   bindSettingsValidators();
+  bindAutoFillSuggestions();
+  bindSoundToggle();
   Diagnostics.bind();
+  Notifications.bind();
+  RunHistory.bind();
+  WorkflowPresets.bind();
+  BulkQueue.bind();
+  HelpDialog.bind();
+  SettingsBackup.bind();
+  bindHeaderActionButtons();
   RecentURLs.render();
 
   // Pre-fill repo from URL if not configured yet.
