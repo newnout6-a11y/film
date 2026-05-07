@@ -20,11 +20,11 @@
     <meta name="application-name" content="Film Beamer" />
     <meta name="format-detection" content="telephone=no" />
 
-    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="manifest" href="./manifest.webmanifest?v=20" />
     <link rel="icon" type="image/svg+xml" href="./icon.svg" />
     <link rel="apple-touch-icon" href="./icon.svg" />
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./style.css?v=20" />
     <script>
       tailwind.config = {
         theme: {
@@ -63,6 +63,39 @@
     <div class="bg-grid pointer-events-none fixed inset-0 -z-10"></div>
     <div class="bg-glow pointer-events-none fixed inset-0 -z-10"></div>
 
+    <!-- Update banner: shown when SW finds a new version. -->
+    <div
+      id="update-banner"
+      class="fixed inset-x-0 top-0 z-[60] hidden"
+      role="status"
+      aria-live="polite"
+    >
+      <div class="mx-auto flex max-w-3xl items-center justify-between gap-3 border-b border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-xs text-emerald-100 backdrop-blur sm:rounded-b-xl sm:border sm:border-t-0">
+        <span class="truncate">
+          <span class="font-semibold">Доступна новая версия.</span>
+          <span id="update-banner-version" class="ml-1 text-emerald-200/80"></span>
+          Обновись, чтобы починки и фичи заработали.
+        </span>
+        <div class="flex shrink-0 items-center gap-1">
+          <button
+            id="update-banner-apply"
+            type="button"
+            class="rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-semibold text-emerald-950 shadow-lg shadow-emerald-500/30 hover:bg-emerald-400"
+          >
+            Обновить сейчас
+          </button>
+          <button
+            id="update-banner-dismiss"
+            type="button"
+            aria-label="Скрыть"
+            class="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-100 hover:bg-emerald-500/20"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+    </div>
+
     <header class="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 pt-[max(env(safe-area-inset-top),1.25rem)] sm:px-6 sm:pt-8">
       <div class="flex min-w-0 items-center gap-3">
         <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-accent-500 to-fuchsia-500 shadow-lg shadow-accent-500/30">
@@ -89,6 +122,15 @@
           class="hidden rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10 sm:inline-flex"
           >GitHub</a
         >
+        <button
+          id="diag-btn"
+          aria-label="Диагностика"
+          title="Диагностика и кеш"
+          class="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+        >
+          <span class="sm:hidden">🩺</span>
+          <span class="hidden sm:inline">Диагностика</span>
+        </button>
         <button
           id="settings-btn"
           aria-label="Настройки"
@@ -208,7 +250,19 @@
                 <span>📋</span>
                 Вставить из буфера
               </button>
+              <button
+                type="button"
+                id="clear-url-btn"
+                class="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10"
+              >
+                <span>🧹</span>
+                Очистить
+              </button>
               <span id="url-hint" class="text-xs text-slate-400"></span>
+            </div>
+            <div id="recent-urls-wrap" class="mt-2 hidden">
+              <div class="text-[10px] uppercase tracking-wider text-slate-500">Недавние ссылки</div>
+              <ul id="recent-urls" class="mt-1 flex flex-wrap gap-1.5"></ul>
             </div>
           </label>
 
@@ -416,6 +470,16 @@
               placeholder="github_pat_..."
               class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
             />
+            <div class="mt-2 flex items-center gap-2">
+              <button
+                id="cfg-token-test"
+                type="button"
+                class="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-white/10"
+              >
+                Проверить токен
+              </button>
+              <span id="cfg-token-status" class="text-xs text-slate-500"></span>
+            </div>
           </label>
         </div>
         <div class="mt-6 flex items-center justify-between">
@@ -488,6 +552,17 @@
             >
               Загрузить в GitHub Secrets
             </button>
+
+            <div class="mt-2 flex items-center gap-2">
+              <button
+                id="drive-test"
+                type="button"
+                class="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-white/10"
+              >
+                Проверить доступ
+              </button>
+              <span id="drive-test-status" class="text-xs text-slate-500"></span>
+            </div>
 
             <p id="drive-status" class="hidden text-xs"></p>
           </div>
@@ -664,6 +739,22 @@
           </button>
         </div>
         <ul id="progress-stages" class="mt-5 space-y-2"></ul>
+        <div id="progress-meta" class="mt-3 hidden rounded-xl border border-white/10 bg-ink-900/60 p-3 text-[11px] text-slate-300">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-slate-400">Длительность</span>
+            <span id="progress-elapsed" class="font-mono text-slate-200">—</span>
+          </div>
+          <div class="mt-1 flex items-center justify-between gap-2">
+            <span class="text-slate-400">Текущий шаг</span>
+            <span id="progress-current-step" class="truncate text-slate-200">—</span>
+          </div>
+        </div>
+        <details id="progress-log-wrap" class="mt-3 rounded-xl border border-white/10 bg-ink-900/60">
+          <summary class="cursor-pointer select-none px-3 py-2 text-xs font-medium text-slate-300">
+            Лог раннера (последние строки)
+          </summary>
+          <pre id="progress-log" class="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-b-xl bg-ink-950/80 px-3 py-2 font-mono text-[10px] leading-snug text-slate-300"></pre>
+        </details>
         <div class="mt-5 flex items-center justify-between gap-3">
           <a
             id="progress-link"
@@ -675,12 +766,120 @@
             Открыть на GitHub →
           </a>
           <button
+            id="progress-cancel"
+            type="button"
+            class="hidden rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200 hover:bg-rose-500/20"
+          >
+            Отменить запуск
+          </button>
+          <button
             id="progress-hide"
             type="button"
             class="ml-auto rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10"
           >
             Свернуть
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Diagnostics dialog -->
+    <div
+      id="diag-dialog"
+      class="fixed inset-0 z-50 hidden overflow-y-auto overscroll-contain bg-black/60 backdrop-blur"
+    >
+      <div class="flex min-h-full items-start justify-center p-4 sm:items-center sm:p-6">
+        <div class="glass my-4 w-full max-w-lg rounded-2xl border border-white/10 bg-ink-800/95 p-6 shadow-2xl">
+          <div class="flex items-start justify-between">
+            <div>
+              <h3 class="text-lg font-semibold">Диагностика</h3>
+              <p class="mt-1 text-xs text-slate-400">
+                Что под капотом и как это починить, если что-то отвалилось.
+              </p>
+            </div>
+            <button
+              id="diag-close"
+              class="rounded-lg p-1.5 text-slate-400 hover:bg-white/5"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div class="mt-5 grid gap-2 text-xs">
+            <div class="flex items-center justify-between rounded-xl border border-white/10 bg-ink-900/60 px-3 py-2">
+              <span class="text-slate-400">Версия страницы</span>
+              <code id="diag-page-version" class="font-mono text-slate-200">—</code>
+            </div>
+            <div class="flex items-center justify-between rounded-xl border border-white/10 bg-ink-900/60 px-3 py-2">
+              <span class="text-slate-400">Версия Service Worker</span>
+              <code id="diag-sw-version" class="font-mono text-slate-200">—</code>
+            </div>
+            <div class="flex items-center justify-between rounded-xl border border-white/10 bg-ink-900/60 px-3 py-2">
+              <span class="text-slate-400">Время загрузки</span>
+              <span id="diag-load-time" class="font-mono text-slate-200">—</span>
+            </div>
+            <div class="flex items-center justify-between rounded-xl border border-white/10 bg-ink-900/60 px-3 py-2">
+              <span class="text-slate-400">Размер кеша</span>
+              <span id="diag-cache-size" class="font-mono text-slate-200">—</span>
+            </div>
+            <div class="flex items-center justify-between rounded-xl border border-white/10 bg-ink-900/60 px-3 py-2">
+              <span class="text-slate-400">GitHub API</span>
+              <span id="diag-github" class="font-mono text-slate-200">—</span>
+            </div>
+            <div class="flex items-center justify-between rounded-xl border border-white/10 bg-ink-900/60 px-3 py-2">
+              <span class="text-slate-400">Drive (service-account)</span>
+              <span id="diag-drive" class="font-mono text-slate-200">—</span>
+            </div>
+            <div class="flex items-center justify-between rounded-xl border border-white/10 bg-ink-900/60 px-3 py-2">
+              <span class="text-slate-400">Секреты репо</span>
+              <span id="diag-secrets" class="font-mono text-slate-200">—</span>
+            </div>
+            <div class="flex items-center justify-between rounded-xl border border-white/10 bg-ink-900/60 px-3 py-2">
+              <span class="text-slate-400">Соединение</span>
+              <span id="diag-online" class="font-mono text-slate-200">—</span>
+            </div>
+          </div>
+
+          <div class="mt-4 grid grid-cols-2 gap-2">
+            <button
+              id="diag-recheck"
+              type="button"
+              class="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/10"
+            >
+              Перепроверить
+            </button>
+            <button
+              id="diag-purge"
+              type="button"
+              class="rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-100 hover:bg-amber-500/20"
+            >
+              Очистить кеш и перезагрузить
+            </button>
+            <button
+              id="diag-reset-sw"
+              type="button"
+              class="rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-200 hover:bg-rose-500/20"
+            >
+              Сбросить Service Worker
+            </button>
+            <button
+              id="diag-export"
+              type="button"
+              class="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/10"
+            >
+              Скопировать отчёт
+            </button>
+          </div>
+
+          <details class="mt-5 rounded-xl border border-white/10 bg-ink-900/60">
+            <summary class="cursor-pointer select-none px-3 py-2 text-xs font-medium text-slate-200">
+              Лог ошибок
+              <span id="diag-errors-count" class="ml-1 text-slate-500">(0)</span>
+            </summary>
+            <ul id="diag-errors" class="max-h-60 space-y-1 overflow-auto px-3 py-2 text-[11px] text-slate-300">
+              <li class="text-slate-500">Пока чисто.</li>
+            </ul>
+          </details>
         </div>
       </div>
     </div>
@@ -692,12 +891,16 @@
       style="bottom: max(env(safe-area-inset-bottom), 1.5rem);"
     ></div>
 
-    <script src="./app.js"></script>
+    <script src="./app.js?v=20"></script>
     <script>
+      // Service worker registration is handled inside app.js (registerServiceWorker)
+      // so the page can detect updates and show the banner. We keep this stub
+      // for browsers where app.js fails to load: at least the SW gets a chance.
       if ("serviceWorker" in navigator) {
         window.addEventListener("load", () => {
+          if (window.__filmBeamerSWBootstrapped) return;
           navigator.serviceWorker.register("./sw.js").catch((err) => {
-            console.warn("SW register failed:", err);
+            console.warn("SW register fallback failed:", err);
           });
         });
       }

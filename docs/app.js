@@ -2156,68 +2156,214 @@ async function bootstrapAccountSync() {
 //
 // Mirrors the step names in .github/workflows/download-to-drive.yml so the
 // UI can render "where are we" without parsing logs. The matchers are
-// intentionally loose so a workflow rename doesn't immediately break the UI.
+// intentionally loose so a workflow rename doesn't immediately break the UI,
+// but each stage knows the *exact* step name(s) it usually corresponds to so
+// the matchers don't accidentally collapse "Install tools" into "Configure
+// rclone" (that was the bug behind tracker rows getting stuck on "ждёт"
+// forever — the matchers were so loose multiple stages bound to the same
+// step and then "Loading…" never advanced past the first match).
 const DISPATCH_STAGES = [
-  { name: "Проверка инпутов", match: /validate|inputs/i },
-  { name: "Установка инструментов", match: /install|setup tools|deps/i },
-  { name: "Настройка rclone", match: /rclone|configure/i },
-  { name: "Скачивание", match: /download|yt-?dlp|aria2/i },
-  { name: "Загрузка на Drive", match: /upload|copy|drive/i },
-  { name: "Очистка", match: /cleanup|clean/i },
+  {
+    id: "validate",
+    name: "Проверка инпутов",
+    match: /validate inputs|detect downloader|check secrets/i,
+  },
+  {
+    id: "install",
+    name: "Установка инструментов",
+    match: /^install tools|install tools$|setup tools|install deps/i,
+  },
+  {
+    id: "rclone",
+    name: "Настройка rclone",
+    match: /configure rclone|rclone (config|setup)/i,
+  },
+  {
+    id: "workspace",
+    name: "Подготовка рабочей папки",
+    match: /prepare workspace|workspace/i,
+  },
+  {
+    id: "download",
+    name: "Скачивание",
+    match: /download with (aria2|yt-?dlp)|^download |downloading|yt-?dlp$/i,
+  },
+  {
+    id: "upload",
+    name: "Загрузка на Drive",
+    match: /upload to (google )?drive|rclone copy|^upload$/i,
+  },
+  {
+    id: "cleanup",
+    name: "Очистка",
+    match: /^cleanup$|^clean$|tear ?down/i,
+  },
 ];
 
-function renderProgressStages(steps) {
+// "Setup-y" GitHub-injected steps we don't want to count as either a real
+// stage or as "unmatched": they're noise for the user but they DO appear in
+// /jobs and used to confuse the matchers.
+const DISPATCH_NOISE_STEPS = [
+  /^set up job$/i,
+  /^complete job$/i,
+  /^post /i,
+];
+
+function isNoiseStep(step) {
+  if (!step || !step.name) return false;
+  return DISPATCH_NOISE_STEPS.some((re) => re.test(step.name));
+}
+
+// Map of stage.id → matching `step` object. Useful for diagnostics and to
+// answer "what's the very current step's full name?".
+function indexStepsByStage(steps) {
+  const out = {};
+  if (!Array.isArray(steps)) return out;
+  for (const stage of DISPATCH_STAGES) {
+    out[stage.id] = steps.find(
+      (s) => !isNoiseStep(s) && stage.match.test(s.name || "")
+    );
+  }
+  return out;
+}
+
+// Classify the *overall* run from its job/steps so the UI can show the
+// right pill at the top: "В очереди", "Идёт: <step>", "Готово", "Ошибка".
+function summariseRun(run, job) {
+  if (!run) return { kind: "queued", text: "Ждём GitHub…" };
+  if (run.status === "queued") return { kind: "queued", text: "В очереди" };
+  if (run.status === "completed") {
+    if (run.conclusion === "success" || run.conclusion === "neutral") {
+      return { kind: "success", text: "Готово" };
+    }
+    if (run.conclusion === "skipped") {
+      return { kind: "skipped", text: "Пропущен" };
+    }
+    return {
+      kind: "failure",
+      text:
+        run.conclusion === "failure"
+          ? "Раннер упал"
+          : `Завершён: ${run.conclusion || "—"}`,
+    };
+  }
+  if (job && job.status === "in_progress") {
+    const cur = (job.steps || []).find(
+      (s) => s.status === "in_progress" && !isNoiseStep(s)
+    );
+    if (cur) return { kind: "running", text: `Идёт: ${cur.name}` };
+    return { kind: "running", text: "Идёт…" };
+  }
+  return { kind: "running", text: STATUS_LABELS[run.status] || run.status };
+}
+
+// Format a step's elapsed/total time as "12с", "1м 04с", "3м", "—".
+function formatStepDuration(step, now) {
+  if (!step) return "";
+  const startStr = step.started_at;
+  if (!startStr) return "";
+  const start = new Date(startStr).getTime();
+  if (!Number.isFinite(start)) return "";
+  const endStr = step.completed_at || null;
+  const end = endStr ? new Date(endStr).getTime() : (now || Date.now());
+  if (!Number.isFinite(end) || end < start) return "";
+  const ms = Math.max(0, end - start);
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}с`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  if (m < 60) return rem ? `${m}м ${String(rem).padStart(2, "0")}с` : `${m}м`;
+  const h = Math.floor(m / 60);
+  return `${h}ч ${m % 60}м`;
+}
+
+function renderProgressStages(steps, opts) {
   const list = $("#progress-stages");
   if (!list) return;
+  const now = (opts && opts.now) || Date.now();
   list.innerHTML = "";
+  let currentStepName = null;
   for (const stage of DISPATCH_STAGES) {
-    const step = (steps || []).find((s) => stage.match.test(s.name || ""));
+    const step = (Array.isArray(steps) ? steps : []).find(
+      (s) => !isNoiseStep(s) && stage.match.test(s.name || "")
+    );
     let key = "pending";
     if (step) {
       if (step.status === "completed") key = step.conclusion || "success";
       else if (step.status === "in_progress" || step.status === "queued")
         key = "in_progress";
     }
+    if (key === "in_progress" && step) currentStepName = step.name;
+
     const li = document.createElement("li");
-    li.className = "flex items-center gap-2 text-sm";
+    li.className = `stage-row ${key}`;
+    li.dataset.stageId = stage.id;
+
     const icon = document.createElement("span");
-    icon.className =
-      key === "in_progress"
-        ? "text-accent-300 animate-pulse"
-        : key === "failure" || key === "cancelled" || key === "timed_out"
-        ? "text-rose-300"
-        : key === "success" || key === "neutral"
-        ? "text-emerald-300"
-        : key === "skipped"
-        ? "text-slate-500"
-        : "text-slate-500";
+    icon.className = "stage-icon";
+    if (key === "failure" || key === "cancelled" || key === "timed_out") {
+      icon.classList.add("text-rose-300");
+    } else if (key === "success" || key === "neutral") {
+      icon.classList.add("text-emerald-300");
+    } else if (key === "in_progress") {
+      icon.classList.add("text-accent-300");
+    } else {
+      icon.classList.add("text-slate-500");
+    }
     icon.textContent = STAGE_ICONS[key] || "○";
-    const label = document.createElement("span");
-    label.className =
-      key === "pending" ? "text-slate-400" : "text-slate-100";
-    label.textContent = stage.name;
-    const sub = document.createElement("span");
-    sub.className = "ml-auto text-xs text-slate-500";
-    sub.textContent =
-      key === "in_progress"
-        ? "идёт"
-        : key === "success"
-        ? "готово"
-        : key === "failure"
-        ? "ошибка"
-        : key === "skipped"
-        ? "пропущен"
-        : key === "cancelled"
-        ? "отменён"
-        : "ждёт";
+
+    const detail = document.createElement("div");
+    detail.className = "stage-detail";
+    const name = document.createElement("span");
+    name.className = "stage-name";
+    name.textContent = stage.name;
+    detail.appendChild(name);
+    if (step && step.name && step.name.trim().toLowerCase() !== stage.name.trim().toLowerCase()) {
+      const sub = document.createElement("span");
+      sub.className = "stage-sub";
+      sub.textContent = step.name;
+      detail.appendChild(sub);
+    }
+
+    const tail = document.createElement("span");
+    tail.className = "stage-tail";
+    if (key === "in_progress") {
+      const dur = step ? formatStepDuration(step, now) : "";
+      tail.textContent = dur ? `идёт · ${dur}` : "идёт";
+    } else if (key === "success") {
+      tail.textContent = step ? `готово · ${formatStepDuration(step, now)}` : "готово";
+    } else if (key === "failure") {
+      tail.textContent = "ошибка";
+    } else if (key === "skipped") {
+      tail.textContent = "пропущен";
+    } else if (key === "cancelled") {
+      tail.textContent = "отменён";
+    } else if (key === "timed_out") {
+      tail.textContent = "таймаут";
+    } else if (key === "neutral") {
+      tail.textContent = "нейтрально";
+    } else {
+      tail.textContent = "ждёт";
+    }
+
     li.appendChild(icon);
-    li.appendChild(label);
-    li.appendChild(sub);
+    li.appendChild(detail);
+    li.appendChild(tail);
     list.appendChild(li);
   }
+  return { currentStepName };
 }
 
 let _progressActive = false;
+// The currently tracked run, if any. We store this so the polling loop can
+// recover state on reload (via sessionStorage) and so the diagnostics panel
+// can show "sees the same run as the live progress dialog".
+let _trackedRun = null;
+let _progressStartedAt = 0;
+// Cancellation token for the in-flight tracker loop. Each call to
+// trackDispatchedRun bumps this so a stale loop from a previous dispatch
+// doesn't keep updating the dialog over a fresh dispatch.
+let _trackEpoch = 0;
 
 function openProgressDialog(title) {
   const dlg = $("#progress-dialog");
@@ -2225,10 +2371,23 @@ function openProgressDialog(title) {
   $("#progress-title").textContent = title || "Запуск раннера…";
   $("#progress-subtitle").textContent =
     "Ждём, пока GitHub зарегистрирует запуск…";
-  $("#progress-link").classList.add("hidden");
+  const link = $("#progress-link");
+  if (link) link.classList.add("hidden");
+  const meta = $("#progress-meta");
+  if (meta) meta.classList.add("hidden");
+  const elapsed = $("#progress-elapsed");
+  if (elapsed) elapsed.textContent = "—";
+  const cur = $("#progress-current-step");
+  if (cur) cur.textContent = "—";
+  const log = $("#progress-log");
+  if (log) log.textContent = "";
+  const logWrap = $("#progress-log-wrap");
+  if (logWrap) logWrap.removeAttribute("open");
   renderProgressStages([]);
   dlg.classList.remove("hidden");
   _progressActive = true;
+  _progressStartedAt = Date.now();
+  startProgressMetaTicker();
 }
 
 function closeProgressDialog() {
@@ -2236,25 +2395,93 @@ function closeProgressDialog() {
   if (!dlg) return;
   dlg.classList.add("hidden");
   _progressActive = false;
+  stopProgressMetaTicker();
 }
 
 function bindProgressDialog() {
   const dlg = $("#progress-dialog");
   if (!dlg) return;
-  $("#progress-close").addEventListener("click", closeProgressDialog);
-  $("#progress-hide").addEventListener("click", closeProgressDialog);
+  const closeBtn = $("#progress-close");
+  if (closeBtn) closeBtn.addEventListener("click", closeProgressDialog);
+  const hideBtn = $("#progress-hide");
+  if (hideBtn) hideBtn.addEventListener("click", closeProgressDialog);
   dlg.addEventListener("click", (e) => {
     if (e.target.id === "progress-dialog") closeProgressDialog();
   });
 }
 
-// Polls the workflow run we just dispatched and re-renders the modal.
+// Drives the "Длительность" / "Текущий шаг" mini-card in the dialog so
+// users see a clock that ticks even when GitHub's API is slow to respond.
+let _progressTickerId = null;
+let _progressLastSubtitle = "";
+let _progressLastCurrentStep = "";
+function startProgressMetaTicker() {
+  stopProgressMetaTicker();
+  _progressTickerId = setInterval(() => {
+    if (!_progressActive) {
+      stopProgressMetaTicker();
+      return;
+    }
+    const meta = $("#progress-meta");
+    const el = $("#progress-elapsed");
+    if (!meta || !el) return;
+    if (_progressStartedAt) {
+      meta.classList.remove("hidden");
+      const ms = Date.now() - _progressStartedAt;
+      const s = Math.floor(ms / 1000);
+      const m = Math.floor(s / 60);
+      const rest = s % 60;
+      el.textContent = m
+        ? `${m}м ${String(rest).padStart(2, "0")}с`
+        : `${rest}с`;
+    }
+  }, 1000);
+}
+function stopProgressMetaTicker() {
+  if (_progressTickerId) {
+    clearInterval(_progressTickerId);
+    _progressTickerId = null;
+  }
+}
+
+// Updates the "Текущий шаг" line. Called from trackDispatchedRun once we know
+// the current step from /jobs.
+function setProgressCurrentStep(name) {
+  const meta = $("#progress-meta");
+  const cur = $("#progress-current-step");
+  if (!meta || !cur) return;
+  if (name) {
+    meta.classList.remove("hidden");
+    cur.textContent = name;
+    _progressLastCurrentStep = name;
+  } else {
+    cur.textContent = _progressLastCurrentStep || "—";
+  }
+}
+
+function setProgressSubtitle(text) {
+  const sub = $("#progress-subtitle");
+  if (!sub) return;
+  sub.textContent = text || "";
+  _progressLastSubtitle = text || "";
+}
+
+// Polls the workflow run we just dispatched and re-renders the modal. This
+// is the function that powers the "Закидываем на Drive" live progress and
+// it is what most users see when something goes wrong, so it gets the
+// fanciest error handling: exponential backoff on transient 5xx, hard
+// cancel on rate-limits, sessionStorage persistence so a refresh resumes
+// tracking, and a tail of the runner log when the job fails.
 async function trackDispatchedRun(workflowFile, dispatchedAt, baseTitle) {
+  const epoch = ++_trackEpoch;
+  const isStillCurrent = () => epoch === _trackEpoch && _progressActive;
+  ActiveRunStore.markPending({ workflowFile, dispatchedAt, baseTitle });
+  let backoffMs = 1500;
   try {
     const gh = new GitHubSearchClient(cfg);
     let run = null;
-    const findDeadline = Date.now() + 60_000;
-    while (Date.now() < findDeadline && _progressActive) {
+    const findDeadline = Date.now() + 90_000;
+    while (Date.now() < findDeadline && isStillCurrent()) {
       try {
         const data = await gh.listRunsForWorkflow(workflowFile, {
           event: "workflow_dispatch",
@@ -2262,54 +2489,150 @@ async function trackDispatchedRun(workflowFile, dispatchedAt, baseTitle) {
         run = (data.workflow_runs || []).find(
           (r) => new Date(r.created_at).getTime() >= dispatchedAt - 5000
         );
+        backoffMs = 1500;
       } catch (err) {
-        console.warn("trackDispatchedRun list:", err);
+        ErrorLog.push(`Поиск запуска: ${err.message || err}`);
+        backoffMs = Math.min(backoffMs * 1.6, 12_000);
       }
       if (run) break;
-      await sleep(2000);
+      await sleep(backoffMs);
     }
-    if (!_progressActive) return;
+    if (!isStillCurrent()) return;
     if (!run) {
-      $("#progress-subtitle").textContent =
-        "Запуск не появился в API за минуту. Проверь Actions вручную.";
+      setProgressSubtitle(
+        "Запуск не появился в API за полторы минуты. Открой Actions в GitHub и проверь вручную."
+      );
+      ActiveRunStore.clear();
       return;
     }
+    _trackedRun = run;
+    ActiveRunStore.attachRun(run);
 
-    $("#progress-title").textContent = baseTitle
-      ? `${baseTitle} · #${run.run_number}`
-      : `Запуск #${run.run_number}`;
+    const titleEl = $("#progress-title");
+    if (titleEl) {
+      titleEl.textContent = baseTitle
+        ? `${baseTitle} · #${run.run_number}`
+        : `Запуск #${run.run_number}`;
+    }
     const link = $("#progress-link");
-    link.href = run.html_url;
-    link.classList.remove("hidden");
+    if (link) {
+      link.href = run.html_url;
+      link.classList.remove("hidden");
+    }
 
-    const deadline = Date.now() + 30 * 60_000;
-    while (Date.now() < deadline && _progressActive) {
-      let data;
+    const deadline = Date.now() + 60 * 60_000;
+    let consecutiveFailures = 0;
+    backoffMs = 3000;
+    while (Date.now() < deadline && isStillCurrent()) {
+      let data = null;
       try {
         data = await gh.getRunJobs(run.id);
+        consecutiveFailures = 0;
+        backoffMs = 3000;
       } catch (err) {
-        console.warn("trackDispatchedRun jobs:", err);
-        await sleep(3000);
+        consecutiveFailures += 1;
+        ErrorLog.push(`Опрос задач: ${err.message || err}`);
+        // 401/403 means we lost auth — bail out, no point in spamming.
+        if (/\b(401|403)\b/.test(String(err.message || ""))) {
+          setProgressSubtitle(
+            "Токен GitHub отклонён — обнови PAT в Настройках."
+          );
+          ActiveRunStore.clear();
+          return;
+        }
+        // Exponential backoff for 5xx and network blips.
+        backoffMs = Math.min(backoffMs * 1.7, 20_000);
+        if (consecutiveFailures >= 6) {
+          setProgressSubtitle(
+            "GitHub API не отвечает. Попробуй обновить страницу или проверь сеть."
+          );
+        }
+        await sleep(backoffMs);
         continue;
       }
       const jobs = data.jobs || [];
       const job = jobs[0];
       if (job) {
-        renderProgressStages(job.steps || []);
-        $("#progress-subtitle").textContent =
-          job.status === "completed"
-            ? `Готово: ${job.conclusion || "—"}`
-            : job.status === "in_progress"
-            ? "Идёт…"
-            : "В очереди — ждём раннер.";
+        const renderRes = renderProgressStages(job.steps || []);
+        const summary = summariseRun(run, job);
+        setProgressSubtitle(summary.text);
+        if (renderRes && renderRes.currentStepName) {
+          setProgressCurrentStep(renderRes.currentStepName);
+        } else if (job.status === "completed") {
+          setProgressCurrentStep(
+            job.conclusion === "success" ? "всё готово" : `завершено: ${job.conclusion}`
+          );
+        }
+      } else {
+        setProgressSubtitle("GitHub ещё не назначил раннер.");
       }
       const allDone =
         jobs.length > 0 && jobs.every((j) => j.status === "completed");
-      if (allDone) return;
-      await sleep(3000);
+      if (allDone) {
+        // Refresh the latest /runs entry so we have the final conclusion.
+        try {
+          const fresh = await gh.listRunsForWorkflow(workflowFile, {
+            event: "workflow_dispatch",
+          });
+          const updated = (fresh.workflow_runs || []).find(
+            (r) => r.id === run.id
+          );
+          if (updated) run = updated;
+        } catch {
+          /* ignore — we already have a usable summary */
+        }
+        const final = summariseRun(run, job);
+        setProgressSubtitle(final.text);
+        // If the job failed, fetch the tail of the failing step's log so the
+        // user has actionable context without leaving the page.
+        if (job && job.conclusion && job.conclusion !== "success") {
+          await populateProgressLog(gh, run, job);
+        }
+        ActiveRunStore.clear();
+        return;
+      }
+      await sleep(backoffMs);
+    }
+    if (isStillCurrent()) {
+      setProgressSubtitle(
+        "Превышен лимит ожидания (1 час). Дальше слежу через список запусков."
+      );
     }
   } catch (err) {
-    console.warn("trackDispatchedRun:", err);
+    ErrorLog.push(`Слежение за запуском: ${err.message || err}`);
+    setProgressSubtitle(`Ошибка слежения: ${err.message || err}`);
+  } finally {
+    if (epoch === _trackEpoch && !_progressActive) {
+      ActiveRunStore.clear();
+    }
+  }
+}
+
+// Best-effort fetch of the runner log for the failing step so users get a
+// hint right in the dialog instead of having to click through to GitHub.
+async function populateProgressLog(gh, run, job) {
+  const wrap = $("#progress-log-wrap");
+  const out = $("#progress-log");
+  if (!wrap || !out) return;
+  try {
+    const url = `https://api.github.com/repos/${cfg.repo}/actions/jobs/${job.id}/logs`;
+    const res = await fetch(url, {
+      headers: { ...new GitHubClient(cfg).headers },
+      redirect: "follow",
+    });
+    if (!res.ok) {
+      out.textContent = `Лог недоступен (HTTP ${res.status}). Открой запуск в GitHub.`;
+      wrap.setAttribute("open", "");
+      return;
+    }
+    const text = await res.text();
+    // Take the last ~3KB of the log — enough for a panic/stack trace.
+    const tail = text.slice(-3500);
+    out.textContent = tail || "Лог пустой.";
+    wrap.setAttribute("open", "");
+  } catch (err) {
+    out.textContent = `Не получилось скачать лог: ${err.message || err}`;
+    wrap.setAttribute("open", "");
   }
 }
 
@@ -2326,18 +2649,1110 @@ function bindPaste() {
       if (!text) return;
       $("#url").value = text.trim();
       $("#url").focus();
+      // Trigger the URL hint pipeline so the user immediately sees what kind
+      // of source the pasted URL is and which downloader will be used.
+      $("#url").dispatchEvent(new Event("input"));
     } catch (err) {
       toast(`Не удалось вставить из буфера: ${err.message || err}`, "error");
     }
   });
 }
 
+function bindClearUrl() {
+  const btn = $("#clear-url-btn");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const url = $("#url");
+    if (!url) return;
+    url.value = "";
+    url.focus();
+    url.dispatchEvent(new Event("input"));
+  });
+}
+
+// ---------- Error log ----------
+//
+// The diagnostics dialog has an "ошибки за сессию" panel. We feed it from
+// here. Every place that catches an error in a polling loop should call
+// `ErrorLog.push(message)` so the user has a single place to see what went
+// wrong instead of having to open DevTools. We deliberately keep this in
+// memory only — the log is per-tab and starts fresh on every reload.
+const ErrorLog = (() => {
+  const MAX = 50;
+  const entries = [];
+  const listeners = new Set();
+  function notify() {
+    for (const cb of listeners) {
+      try {
+        cb(entries.slice());
+      } catch (err) {
+        console.warn("ErrorLog listener:", err);
+      }
+    }
+  }
+  return {
+    push(message) {
+      const text = String(message || "").trim();
+      if (!text) return;
+      entries.unshift({ ts: Date.now(), text });
+      if (entries.length > MAX) entries.length = MAX;
+      notify();
+    },
+    clear() {
+      entries.length = 0;
+      notify();
+    },
+    list() {
+      return entries.slice();
+    },
+    subscribe(cb) {
+      listeners.add(cb);
+      cb(entries.slice());
+      return () => listeners.delete(cb);
+    },
+  };
+})();
+
+// Hook console.error so unhandled errors from third-party scripts (libsodium
+// CDN failures, sodium init mismatches, etc.) end up in the error log too.
+// We don't replace `console.error` itself — we just listen via window.error.
+window.addEventListener("error", (event) => {
+  const m = event && event.error && event.error.message
+    ? event.error.message
+    : event && event.message
+    ? event.message
+    : "";
+  if (m) ErrorLog.push(`JS: ${m}`);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  const r = event && event.reason;
+  const m = r && r.message ? r.message : String(r || "");
+  if (m) ErrorLog.push(`Promise: ${m}`);
+});
+
+// ---------- Active run persistence (sessionStorage) ----------
+//
+// The single biggest UX bug after stale-cache: if the user reloaded the page
+// while a workflow was running, the live progress dialog vanished and the
+// "ждёт" pills in the runs list never updated, because we threw away the
+// `_trackedRun` reference on every load. This module pickles the run we're
+// tracking so a refresh resumes it (or shows it as "completed" immediately
+// if the run finished in the meantime).
+const ActiveRunStore = (() => {
+  const KEY = "film-beamer.active-run.v1";
+  function read() {
+    try {
+      const raw = sessionStorage.getItem(KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+  function write(value) {
+    try {
+      sessionStorage.setItem(KEY, JSON.stringify(value));
+    } catch {
+      /* sessionStorage may be disabled in private mode; not fatal */
+    }
+  }
+  function clear() {
+    try {
+      sessionStorage.removeItem(KEY);
+    } catch {
+      /* noop */
+    }
+  }
+  return {
+    read,
+    clear,
+    markPending(meta) {
+      write({
+        ...meta,
+        runId: null,
+        runUrl: null,
+        runNumber: null,
+        savedAt: Date.now(),
+      });
+    },
+    attachRun(run) {
+      const cur = read() || {};
+      write({
+        ...cur,
+        runId: run.id,
+        runUrl: run.html_url,
+        runNumber: run.run_number,
+        runCreatedAt: run.created_at,
+        savedAt: Date.now(),
+      });
+    },
+    rememberCompleted(run) {
+      // We don't currently persist completed runs — the runs list does that
+      // already. This is a hook for future use (run history page, etc.).
+      void run;
+    },
+  };
+})();
+
+// On boot, if sessionStorage says we were tracking a run, resume tracking.
+// The function is idempotent: it is safe to call even when nothing was saved.
+async function resumeActiveRun() {
+  const saved = ActiveRunStore.read();
+  if (!saved || !saved.workflowFile || !saved.dispatchedAt) return;
+  // If the saved run is older than 2 hours, drop it — too stale to be useful.
+  if (Date.now() - (saved.savedAt || 0) > 2 * 60 * 60_000) {
+    ActiveRunStore.clear();
+    return;
+  }
+  if (!isReady()) {
+    // Settings cleared / token missing — nothing we can do.
+    ActiveRunStore.clear();
+    return;
+  }
+  try {
+    const baseTitle = saved.baseTitle || "Активный запуск";
+    openProgressDialog(`${baseTitle} (восстановлен)`);
+    setProgressSubtitle("Восстанавливаем прогресс из предыдущей сессии…");
+    trackDispatchedRun(saved.workflowFile, saved.dispatchedAt, baseTitle).catch(
+      (err) => ErrorLog.push(`Восстановление: ${err.message || err}`)
+    );
+  } catch (err) {
+    ErrorLog.push(`Восстановление активного запуска: ${err.message || err}`);
+    ActiveRunStore.clear();
+  }
+}
+
+// ---------- Recent URLs ----------
+//
+// We persist the last N URLs the user dispatched so they can re-beam with one
+// click. URLs that look obviously sensitive (bearer tokens, raw credentials)
+// are never stored.
+const RecentURLs = (() => {
+  const KEY = "film-beamer.recent-urls.v1";
+  const MAX = 10;
+  const SENSITIVE_RE = /(token=|password=|api[_-]?key=|secret=)/i;
+  function read() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(
+        (it) => it && typeof it.url === "string" && it.url
+      );
+    } catch {
+      return [];
+    }
+  }
+  function write(items) {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(items.slice(0, MAX)));
+    } catch {
+      /* quota / private mode — non-fatal */
+    }
+  }
+  return {
+    list() {
+      return read();
+    },
+    add({ url, filename }) {
+      if (!url || typeof url !== "string") return;
+      if (SENSITIVE_RE.test(url)) return;
+      const items = read().filter((it) => it.url !== url);
+      items.unshift({
+        url,
+        filename: (filename || "").trim(),
+        ts: Date.now(),
+      });
+      write(items);
+      RecentURLs.render();
+    },
+    remove(url) {
+      const items = read().filter((it) => it.url !== url);
+      write(items);
+      RecentURLs.render();
+    },
+    clear() {
+      write([]);
+      RecentURLs.render();
+    },
+    render() {
+      const wrap = $("#recent-urls-wrap");
+      const list = $("#recent-urls");
+      if (!wrap || !list) return;
+      const items = read();
+      list.innerHTML = "";
+      if (!items.length) {
+        wrap.classList.add("hidden");
+        return;
+      }
+      wrap.classList.remove("hidden");
+      for (const item of items) {
+        const li = document.createElement("li");
+        const chip = document.createElement("span");
+        chip.className = "recent-url-chip";
+        chip.title = `${item.url}${
+          item.filename ? `\n${item.filename}` : ""
+        }`;
+        const text = document.createElement("span");
+        text.className = "text";
+        text.textContent = item.filename
+          ? `${item.filename} · ${shortenUrl(item.url)}`
+          : shortenUrl(item.url);
+        chip.appendChild(text);
+        const rm = document.createElement("button");
+        rm.type = "button";
+        rm.className = "remove";
+        rm.textContent = "✕";
+        rm.title = "Удалить из истории";
+        rm.addEventListener("click", (e) => {
+          e.stopPropagation();
+          RecentURLs.remove(item.url);
+        });
+        chip.addEventListener("click", () => {
+          const urlInput = $("#url");
+          if (!urlInput) return;
+          urlInput.value = item.url;
+          urlInput.dispatchEvent(new Event("input"));
+          urlInput.focus();
+          if (item.filename) {
+            const f = $("#filename");
+            if (f && !f.value) f.value = item.filename;
+          }
+        });
+        chip.appendChild(rm);
+        li.appendChild(chip);
+        list.appendChild(li);
+      }
+    },
+  };
+})();
+
+// Trim very long URLs to a readable chip label.
+function shortenUrl(raw) {
+  if (!raw) return "";
+  if (/^magnet:\?/i.test(raw)) {
+    const m = raw.match(/dn=([^&]+)/);
+    if (m) {
+      try {
+        return `magnet · ${decodeURIComponent(m[1])}`.slice(0, 80);
+      } catch {
+        return `magnet · ${m[1]}`.slice(0, 80);
+      }
+    }
+    return "magnet · " + raw.slice(8, 28) + "…";
+  }
+  try {
+    const u = new URL(raw);
+    let path = u.pathname || "/";
+    if (path.length > 36) {
+      path = path.slice(0, 18) + "…" + path.slice(-12);
+    }
+    return `${u.hostname}${path}`;
+  } catch {
+    return raw.length > 60 ? raw.slice(0, 28) + "…" + raw.slice(-24) : raw;
+  }
+}
+
+// ---------- Service Worker update flow ----------
+//
+// Pairs with the new docs/sw.js. When the SW finds a fresh build on the
+// network, it installs into "waiting" state. The page then shows an update
+// banner; clicking "Обновить" sends SKIP_WAITING and reloads.
+const SwUpdater = (() => {
+  let waitingWorker = null;
+  let reloading = false;
+  function showBanner(version) {
+    const banner = $("#update-banner");
+    if (!banner) return;
+    const verEl = $("#update-banner-version");
+    if (verEl) {
+      verEl.textContent = version
+        ? `(${version})`
+        : "";
+    }
+    banner.classList.remove("hidden");
+  }
+  function hideBanner() {
+    const banner = $("#update-banner");
+    if (banner) banner.classList.add("hidden");
+  }
+  async function init() {
+    if (!("serviceWorker" in navigator)) return;
+    try {
+      const reg = await navigator.serviceWorker.register("./sw.js");
+      // If a waiting worker is already there (we missed the install event),
+      // surface it immediately.
+      if (reg.waiting) {
+        waitingWorker = reg.waiting;
+        showBanner();
+      }
+      reg.addEventListener("updatefound", () => {
+        const installing = reg.installing;
+        if (!installing) return;
+        installing.addEventListener("statechange", () => {
+          if (
+            installing.state === "installed" &&
+            navigator.serviceWorker.controller
+          ) {
+            waitingWorker = installing;
+            showBanner();
+          }
+        });
+      });
+      // Force a check now so deploys land within seconds of the user landing
+      // on the page, even if Chrome wouldn't otherwise check for hours.
+      reg.update().catch(() => {});
+      // Re-check periodically (every 6h) for long-lived tabs.
+      setInterval(() => reg.update().catch(() => {}), 6 * 60 * 60_000);
+    } catch (err) {
+      console.warn("SW register:", err);
+      ErrorLog.push(`Service Worker: ${err.message || err}`);
+    }
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (reloading) return;
+      reloading = true;
+      window.location.reload();
+    });
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      const data = event.data || {};
+      if (data.type === "SW_VERSION") {
+        const el = $("#diag-sw-version");
+        if (el) el.textContent = data.version || "—";
+      } else if (data.type === "CACHE_PURGED") {
+        toast("Кеш очищен. Перезагружаю…", "success", 1500);
+        setTimeout(() => window.location.reload(), 800);
+      }
+    });
+  }
+  function bind() {
+    const apply = $("#update-banner-apply");
+    const dismiss = $("#update-banner-dismiss");
+    if (apply) {
+      apply.addEventListener("click", () => {
+        if (!waitingWorker) {
+          // No waiting worker — just hard reload.
+          window.location.reload();
+          return;
+        }
+        try {
+          waitingWorker.postMessage({ type: "SKIP_WAITING" });
+        } catch {
+          window.location.reload();
+        }
+      });
+    }
+    if (dismiss) {
+      dismiss.addEventListener("click", hideBanner);
+    }
+  }
+  return { init, bind, showBanner, hideBanner };
+})();
+
+// ---------- Diagnostics dialog ----------
+//
+// Surfaces "is this thing actually wired up correctly?" answers in one place
+// so the user can self-serve troubleshoot before pinging an admin. Each
+// check is best-effort and updates a row asynchronously — opening the
+// dialog never blocks on slow checks.
+const Diagnostics = (() => {
+  const PAGE_VERSION = "v20-network-first";
+  let opened = false;
+
+  function setRow(id, text, status) {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = text;
+    el.classList.remove(
+      "diag-status-ok",
+      "diag-status-warn",
+      "diag-status-bad",
+      "diag-status-pending"
+    );
+    if (status === "ok") el.classList.add("diag-status-ok");
+    else if (status === "warn") el.classList.add("diag-status-warn");
+    else if (status === "bad") el.classList.add("diag-status-bad");
+    else el.classList.add("diag-status-pending");
+  }
+
+  async function checkSwVersion() {
+    setRow("#diag-sw-version", "запрашиваю…", "pending");
+    if (!("serviceWorker" in navigator) || !navigator.serviceWorker.controller) {
+      setRow("#diag-sw-version", "не активен", "warn");
+      return;
+    }
+    try {
+      navigator.serviceWorker.controller.postMessage({ type: "GET_VERSION" });
+    } catch (err) {
+      setRow("#diag-sw-version", `ошибка: ${err.message || err}`, "bad");
+    }
+  }
+
+  async function checkCacheSize() {
+    setRow("#diag-cache-size", "считаю…", "pending");
+    try {
+      if (!("caches" in window)) {
+        setRow("#diag-cache-size", "Cache API недоступен", "warn");
+        return;
+      }
+      const keys = await caches.keys();
+      let total = 0;
+      let count = 0;
+      for (const key of keys) {
+        if (!key.startsWith("film-beamer-")) continue;
+        const cache = await caches.open(key);
+        const requests = await cache.keys();
+        count += requests.length;
+        // We don't have a reliable way to get response size without re-reading
+        // every cached blob, which is wasteful — give an entry count instead.
+      }
+      setRow(
+        "#diag-cache-size",
+        keys.length
+          ? `${count} файлов в ${keys.filter((k) => k.startsWith("film-beamer-")).length} кешах`
+          : "пусто",
+        keys.length ? "ok" : "warn"
+      );
+      void total;
+    } catch (err) {
+      setRow("#diag-cache-size", `ошибка: ${err.message || err}`, "bad");
+    }
+  }
+
+  async function checkGitHub() {
+    setRow("#diag-github", "пробую…", "pending");
+    if (!cfg.token) {
+      setRow("#diag-github", "PAT не задан", "warn");
+      return;
+    }
+    try {
+      const res = await fetch("https://api.github.com/rate_limit", {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${cfg.token}`,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      });
+      if (!res.ok) {
+        setRow(
+          "#diag-github",
+          `HTTP ${res.status} — токен невалиден или истёк`,
+          "bad"
+        );
+        return;
+      }
+      const data = await res.json();
+      const core = data && data.resources && data.resources.core;
+      if (core) {
+        setRow(
+          "#diag-github",
+          `OK · лимит ${core.remaining}/${core.limit}`,
+          core.remaining > 100 ? "ok" : "warn"
+        );
+      } else {
+        setRow("#diag-github", "OK", "ok");
+      }
+    } catch (err) {
+      setRow("#diag-github", `сеть: ${err.message || err}`, "bad");
+    }
+  }
+
+  async function checkDrive() {
+    setRow("#diag-drive", "пробую…", "pending");
+    if (!cfg.driveSaJson || !cfg.driveFolderId) {
+      setRow("#diag-drive", "SA + Folder не задан", "warn");
+      return;
+    }
+    try {
+      const token = await getDriveAccessToken();
+      const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+          cfg.driveFolderId
+        )}?fields=id,name,driveId,owners`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!res.ok) {
+        const text = await res.text();
+        setRow(
+          "#diag-drive",
+          `HTTP ${res.status}: ${text.slice(0, 80)}`,
+          "bad"
+        );
+        return;
+      }
+      const data = await res.json();
+      setRow(
+        "#diag-drive",
+        `OK · «${data.name || cfg.driveFolderId}»`,
+        "ok"
+      );
+    } catch (err) {
+      setRow("#diag-drive", `${err.message || err}`, "bad");
+    }
+  }
+
+  async function checkSecrets() {
+    setRow("#diag-secrets", "проверяю…", "pending");
+    if (!cfg.token || !cfg.repo) {
+      setRow("#diag-secrets", "репо/PAT не заданы", "warn");
+      return;
+    }
+    try {
+      const gh = new GitHubClient(cfg);
+      const required = ["GDRIVE_SERVICE_ACCOUNT", "GDRIVE_FOLDER_ID"];
+      const missing = [];
+      for (const name of required) {
+        const sec = await gh.getActionsSecret(name).catch(() => null);
+        if (!sec) missing.push(name);
+      }
+      if (missing.length) {
+        setRow(
+          "#diag-secrets",
+          `нет: ${missing.join(", ")}`,
+          "bad"
+        );
+      } else {
+        setRow("#diag-secrets", "OK · GDRIVE_* заданы", "ok");
+      }
+    } catch (err) {
+      setRow("#diag-secrets", `${err.message || err}`, "bad");
+    }
+  }
+
+  function checkOnline() {
+    if (navigator.onLine) {
+      setRow("#diag-online", "online", "ok");
+    } else {
+      setRow("#diag-online", "offline", "bad");
+    }
+  }
+
+  function setLoadTime() {
+    const el = $("#diag-load-time");
+    if (!el) return;
+    try {
+      const nav = performance.getEntriesByType("navigation")[0];
+      if (nav) {
+        el.textContent = `${Math.round(nav.duration)} мс`;
+      } else {
+        el.textContent = `${Math.round(performance.now())} мс`;
+      }
+    } catch {
+      el.textContent = "—";
+    }
+  }
+
+  function renderErrors(entries) {
+    const list = $("#diag-errors");
+    if (!list) return;
+    const counter = $("#diag-errors-count");
+    if (counter) counter.textContent = `(${entries.length})`;
+    list.innerHTML = "";
+    if (!entries.length) {
+      const empty = document.createElement("li");
+      empty.className = "text-slate-500";
+      empty.textContent = "Пока чисто.";
+      list.appendChild(empty);
+      return;
+    }
+    for (const entry of entries) {
+      const li = document.createElement("li");
+      li.className = "diag-error-entry";
+      const time = document.createElement("span");
+      time.className = "diag-error-time";
+      const d = new Date(entry.ts);
+      time.textContent = `${String(d.getHours()).padStart(2, "0")}:${String(
+        d.getMinutes()
+      ).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+      li.appendChild(time);
+      const text = document.createElement("span");
+      text.textContent = entry.text;
+      li.appendChild(text);
+      list.appendChild(li);
+    }
+  }
+
+  function buildExportReport() {
+    const fmt = (id) => {
+      const el = $(id);
+      return el ? (el.textContent || "").trim() : "—";
+    };
+    const lines = [
+      "# Film Beamer · отчёт диагностики",
+      `Время: ${new Date().toISOString()}`,
+      `Версия страницы: ${PAGE_VERSION}`,
+      `Версия SW: ${fmt("#diag-sw-version")}`,
+      `Время загрузки: ${fmt("#diag-load-time")}`,
+      `Кеш: ${fmt("#diag-cache-size")}`,
+      `GitHub API: ${fmt("#diag-github")}`,
+      `Drive: ${fmt("#diag-drive")}`,
+      `Секреты: ${fmt("#diag-secrets")}`,
+      `Online: ${fmt("#diag-online")}`,
+      `User-Agent: ${navigator.userAgent}`,
+      `Repo: ${cfg.repo || "—"}`,
+      `Branch: ${cfg.branch || "(default)"}`,
+      `Workflow: ${cfg.workflow || "—"}`,
+      "",
+      "## Последние ошибки",
+    ];
+    const errors = ErrorLog.list();
+    if (!errors.length) {
+      lines.push("(нет)");
+    } else {
+      for (const entry of errors) {
+        lines.push(`- ${new Date(entry.ts).toISOString()} · ${entry.text}`);
+      }
+    }
+    return lines.join("\n");
+  }
+
+  async function resetSw() {
+    if (
+      !confirm(
+        "Снимаем регистрацию Service Worker и стираем все кеши. Страница перезагрузится. Продолжить?"
+      )
+    ) {
+      return;
+    }
+    try {
+      if ("serviceWorker" in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+      }
+      if ("caches" in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+    } catch (err) {
+      ErrorLog.push(`Сброс SW: ${err.message || err}`);
+    }
+    window.location.reload();
+  }
+
+  function open() {
+    const dlg = $("#diag-dialog");
+    if (!dlg) return;
+    dlg.classList.remove("hidden");
+    opened = true;
+    // Static-ish info first.
+    setRow("#diag-page-version", PAGE_VERSION, "ok");
+    setLoadTime();
+    checkOnline();
+    // Async checks.
+    checkSwVersion();
+    checkCacheSize();
+    checkGitHub();
+    checkDrive();
+    checkSecrets();
+    renderErrors(ErrorLog.list());
+  }
+  function close() {
+    const dlg = $("#diag-dialog");
+    if (dlg) dlg.classList.add("hidden");
+    opened = false;
+  }
+  function bind() {
+    const btn = $("#diag-btn");
+    if (btn) btn.addEventListener("click", open);
+    const closeBtn = $("#diag-close");
+    if (closeBtn) closeBtn.addEventListener("click", close);
+    const dlg = $("#diag-dialog");
+    if (dlg) {
+      dlg.addEventListener("click", (e) => {
+        if (e.target.id === "diag-dialog") close();
+      });
+    }
+    const recheck = $("#diag-recheck");
+    if (recheck) recheck.addEventListener("click", open);
+    const purge = $("#diag-purge");
+    if (purge) {
+      purge.addEventListener("click", async () => {
+        if (
+          !confirm(
+            "Стираем кеш Service Worker и перезагружаем страницу. Продолжить?"
+          )
+        ) {
+          return;
+        }
+        if (
+          "serviceWorker" in navigator &&
+          navigator.serviceWorker.controller
+        ) {
+          navigator.serviceWorker.controller.postMessage({
+            type: "PURGE_CACHE",
+          });
+        } else {
+          // Fallback — drop caches manually.
+          try {
+            if ("caches" in window) {
+              const keys = await caches.keys();
+              await Promise.all(
+                keys
+                  .filter((k) => k.startsWith("film-beamer-"))
+                  .map((k) => caches.delete(k))
+              );
+            }
+          } catch (err) {
+            ErrorLog.push(`Очистка кеша: ${err.message || err}`);
+          }
+          window.location.reload();
+        }
+      });
+    }
+    const reset = $("#diag-reset-sw");
+    if (reset) reset.addEventListener("click", resetSw);
+    const exportBtn = $("#diag-export");
+    if (exportBtn) {
+      exportBtn.addEventListener("click", async () => {
+        const text = buildExportReport();
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            toast("Отчёт скопирован в буфер.", "success", 1800);
+            return;
+          }
+          throw new Error("Clipboard API недоступен");
+        } catch {
+          // Fallback — open a textarea so the user can copy manually.
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.top = "10%";
+          ta.style.left = "10%";
+          ta.style.width = "80%";
+          ta.style.height = "60%";
+          ta.style.zIndex = "9999";
+          document.body.appendChild(ta);
+          ta.select();
+          try {
+            document.execCommand("copy");
+            toast("Отчёт скопирован.", "success", 1800);
+          } catch {
+            toast("Скопируй вручную из открывшегося окна.", "warning", 4000);
+          }
+          setTimeout(() => ta.remove(), 4000);
+        }
+      });
+    }
+    ErrorLog.subscribe((entries) => {
+      if (opened) renderErrors(entries);
+      // Always update the count badge in the header.
+      const counter = $("#diag-errors-count");
+      if (counter) counter.textContent = `(${entries.length})`;
+    });
+    // Online/offline state — reflect into the dialog if it's open.
+    window.addEventListener("online", () => {
+      if (opened) checkOnline();
+    });
+    window.addEventListener("offline", () => {
+      if (opened) checkOnline();
+    });
+  }
+  return { open, close, bind };
+})();
+
+// ---------- Settings test buttons ----------
+//
+// "Проверить токен" / "Проверить Drive" / "Проверить секреты" buttons in the
+// Settings dialog. These run the same checks Diagnostics does but inline,
+// next to the relevant inputs, so users can verify before saving.
+async function validateGitHubAccess() {
+  const out = $("#cfg-token-status");
+  if (!out) return;
+  const token = ($("#cfg-token").value || "").trim();
+  const repo = ($("#cfg-repo").value || "").trim();
+  if (!token) {
+    out.textContent = "Введи PAT и попробуй снова.";
+    out.className = "mt-1 text-xs text-amber-300";
+    return;
+  }
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+    out.textContent = "Сначала укажи репо в формате owner/repo.";
+    out.className = "mt-1 text-xs text-amber-300";
+    return;
+  }
+  out.textContent = "Проверяю…";
+  out.className = "mt-1 text-xs text-slate-400";
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}`, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+    if (res.status === 401) {
+      out.textContent = "401 — токен битый или истёк. Перевыпусти PAT.";
+      out.className = "mt-1 text-xs text-rose-300";
+      return;
+    }
+    if (res.status === 404) {
+      out.textContent =
+        "404 — репо не найден или у токена нет к нему доступа. Проверь видимость и репозиторные права.";
+      out.className = "mt-1 text-xs text-rose-300";
+      return;
+    }
+    if (!res.ok) {
+      out.textContent = `HTTP ${res.status}.`;
+      out.className = "mt-1 text-xs text-rose-300";
+      return;
+    }
+    const data = await res.json();
+    out.textContent = `OK · default ${data.default_branch || "—"} · public=${data.private ? "нет" : "да"}`;
+    out.className = "mt-1 text-xs text-emerald-300";
+  } catch (err) {
+    out.textContent = `Сеть: ${err.message || err}`;
+    out.className = "mt-1 text-xs text-rose-300";
+  }
+}
+
+async function validateDriveAccess() {
+  const out = $("#drive-test-status");
+  if (!out) return;
+  const jsonRaw = ($("#drive-json").value || "").trim();
+  const folderRaw = ($("#drive-folder").value || "").trim();
+  if (!jsonRaw && !cfg.driveSaJson) {
+    out.textContent = "Сначала вставь service-account JSON.";
+    out.className = "mt-1 text-xs text-amber-300";
+    return;
+  }
+  if (!folderRaw && !cfg.driveFolderId) {
+    out.textContent = "Сначала вставь Folder ID.";
+    out.className = "mt-1 text-xs text-amber-300";
+    return;
+  }
+  out.textContent = "Проверяю доступ к Drive…";
+  out.className = "mt-1 text-xs text-slate-400";
+  // Build a temporary cfg that uses the values currently in the dialog so the
+  // user can validate before saving.
+  const prev = { json: cfg.driveSaJson, folder: cfg.driveFolderId };
+  if (jsonRaw) cfg.driveSaJson = jsonRaw;
+  if (folderRaw) {
+    const id = extractFolderId(folderRaw) || folderRaw;
+    cfg.driveFolderId = id;
+  }
+  // Reset cached token so we definitely re-issue a JWT with the new SA.
+  _driveAccessToken = null;
+  try {
+    const token = await getDriveAccessToken();
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+        cfg.driveFolderId
+      )}?fields=id,name`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      out.textContent = `HTTP ${res.status}: ${text.slice(0, 80)}`;
+      out.className = "mt-1 text-xs text-rose-300";
+      return;
+    }
+    const data = await res.json();
+    out.textContent = `OK · вижу папку «${data.name || cfg.driveFolderId}»`;
+    out.className = "mt-1 text-xs text-emerald-300";
+  } catch (err) {
+    out.textContent = `${err.message || err}`;
+    out.className = "mt-1 text-xs text-rose-300";
+  } finally {
+    cfg.driveSaJson = prev.json;
+    cfg.driveFolderId = prev.folder;
+    _driveAccessToken = null;
+  }
+}
+
+function bindSettingsValidators() {
+  const tokenBtn = $("#cfg-token-test");
+  if (tokenBtn) tokenBtn.addEventListener("click", validateGitHubAccess);
+  const driveBtn = $("#drive-test");
+  if (driveBtn) driveBtn.addEventListener("click", validateDriveAccess);
+}
+
+// ---------- Keyboard shortcuts ----------
+//
+// Ctrl/Cmd+K  → focus URL input
+// Ctrl/Cmd+,  → open Settings
+// Ctrl/Cmd+/  → open Diagnostics
+// Esc         → close any open dialog
+function bindKeyboardShortcuts() {
+  document.addEventListener("keydown", (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      const url = $("#url");
+      if (url) {
+        url.focus();
+        url.select();
+      }
+      return;
+    }
+    if (mod && e.key === ",") {
+      e.preventDefault();
+      openSettings();
+      return;
+    }
+    if (mod && e.key === "/") {
+      e.preventDefault();
+      Diagnostics.open();
+      return;
+    }
+    if (e.key === "Escape") {
+      // Close whichever dialog is open. We don't preventDefault — Esc has
+      // its own native behaviour we want to keep where possible.
+      const sd = $("#settings-dialog");
+      if (sd && !sd.classList.contains("hidden")) {
+        closeSettings();
+      }
+      const pd = $("#progress-dialog");
+      if (pd && !pd.classList.contains("hidden")) {
+        closeProgressDialog();
+      }
+      const dd = $("#diag-dialog");
+      if (dd && !dd.classList.contains("hidden")) {
+        Diagnostics.close();
+      }
+    }
+  });
+}
+
+// ---------- Deep-link prefill ----------
+//
+// The page accepts these query parameters so other apps (including the PWA
+// share target) can pre-fill the form:
+//   ?url=...
+//   &filename=...
+//   &subfolder=...
+//   &quality=...
+//   &action=beam (auto-submit if isReady())
+function applyDeepLinkPrefill() {
+  let parsed;
+  try {
+    parsed = new URL(window.location.href);
+  } catch {
+    return;
+  }
+  const params = parsed.searchParams;
+  const url = params.get("url");
+  if (url) {
+    const u = $("#url");
+    if (u) {
+      u.value = url;
+      u.dispatchEvent(new Event("input"));
+    }
+  }
+  const filename = params.get("filename");
+  if (filename) {
+    const f = $("#filename");
+    if (f) f.value = filename;
+  }
+  const subfolder = params.get("subfolder");
+  if (subfolder) {
+    const s = $("#subfolder");
+    if (s) s.value = subfolder;
+  }
+  const quality = params.get("quality");
+  if (quality) {
+    const q = $("#quality");
+    if (q) {
+      const allowed = ["auto", "1080p", "720p", "480p", "audio", "custom"];
+      if (allowed.includes(quality)) {
+        q.value = quality;
+        q.dispatchEvent(new Event("change"));
+      }
+    }
+  }
+  const action = params.get("action");
+  if (action === "beam") {
+    if (isReady() && url) {
+      // Fire after a short delay so all event listeners are bound.
+      setTimeout(() => {
+        const form = $("#beam-form");
+        if (form) {
+          form.dispatchEvent(
+            new Event("submit", { cancelable: true, bubbles: true })
+          );
+        }
+      }, 200);
+    } else {
+      const u = $("#url");
+      if (u) u.focus();
+    }
+  }
+  // Strip query string so a refresh doesn't re-submit.
+  if (url || filename || subfolder || quality || action) {
+    try {
+      const clean = parsed.origin + parsed.pathname + parsed.hash;
+      history.replaceState(null, "", clean);
+    } catch {
+      /* noop */
+    }
+  }
+}
+
+// Wrap the original beam-form submit to record the URL into RecentURLs after
+// a successful dispatch. We do this via a post-bind hook rather than editing
+// bindForm directly so the existing flow is untouched.
+function bindRecentUrlCapture() {
+  const form = $("#beam-form");
+  if (!form) return;
+  // We capture the inputs *at submit time* (not at dispatch time) so we
+  // catch even runs that fail validation after submit started, but we
+  // only push to RecentURLs once the form's "Отправляем…" button label has
+  // returned to its original state without an error appearing in #form-error.
+  const urlInput = $("#url");
+  const filenameInput = $("#filename");
+  let pending = null;
+  form.addEventListener(
+    "submit",
+    () => {
+      pending = {
+        url: urlInput ? urlInput.value.trim() : "",
+        filename: filenameInput ? filenameInput.value.trim() : "",
+      };
+      // After ~6s, if no error appeared we treat the dispatch as successful
+      // and store the URL.
+      setTimeout(() => {
+        if (!pending) return;
+        const errEl = $("#form-error");
+        if (!errEl || !errEl.textContent.trim()) {
+          if (pending.url) RecentURLs.add(pending);
+        }
+        pending = null;
+      }, 6000);
+    },
+    { capture: true }
+  );
+}
+
+// Refresh button rotation on click — purely cosmetic but signals to the user
+// that the click registered.
+function bindRefreshButton() {
+  const btn = $("#refresh-btn");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    btn.classList.add("animate-spin");
+    refreshRuns(true).finally(() => {
+      setTimeout(() => btn.classList.remove("animate-spin"), 600);
+    });
+  });
+}
+
 // ---------- bootstrap ----------
 document.addEventListener("DOMContentLoaded", () => {
+  // Bring up the Service Worker update channel as early as we can so a
+  // freshly deployed version can prompt the user even if other init steps
+  // throw.
+  SwUpdater.bind();
+  SwUpdater.init().catch((err) => {
+    ErrorLog.push(`SW init: ${err.message || err}`);
+  });
+
   bindSettings();
   bindForm();
   bindInstall();
   bindPaste();
+  bindClearUrl();
   bindDriveUpload();
   bindYtCookiesUpload();
   bindTrackersUpload();
@@ -2346,7 +3761,12 @@ document.addEventListener("DOMContentLoaded", () => {
   bindQualityToggle();
   bindAccountSync();
   bindProgressDialog();
-  $("#refresh-btn").addEventListener("click", () => refreshRuns(true));
+  bindRefreshButton();
+  bindKeyboardShortcuts();
+  bindRecentUrlCapture();
+  bindSettingsValidators();
+  Diagnostics.bind();
+  RecentURLs.render();
 
   // Pre-fill repo from URL if not configured yet.
   if (!cfg.repo) {
@@ -2361,16 +3781,10 @@ document.addEventListener("DOMContentLoaded", () => {
   // Try pulling the latest cfg from Drive once on boot. Silent on failure
   // (e.g. SA not yet configured, network issue).
   bootstrapAccountSync();
-
-  // If launched via the shortcut "?action=beam", focus URL field.
-  try {
-    const u = new URL(window.location.href);
-    if (u.searchParams.get("action") === "beam") {
-      $("#url").focus();
-    }
-  } catch {
-    /* noop */
-  }
+  // Apply ?url=... and friends, then resume tracking a previously dispatched
+  // run if there was one.
+  applyDeepLinkPrefill();
+  resumeActiveRun();
 
   // Pause polling when tab is hidden to save quota.
   document.addEventListener("visibilitychange", () => {
