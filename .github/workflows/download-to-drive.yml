@@ -113,13 +113,14 @@ jobs:
             echo "::error::GDRIVE_SERVICE_ACCOUNT does not look like a valid service account JSON."
             exit 1
           fi
-          cat > "$HOME/.config/rclone/rclone.conf" <<EOF
-          [gdrive]
-          type = drive
-          scope = drive
-          service_account_file = $sa_path
-          root_folder_id = $GDRIVE_FOLDER_ID
-          EOF
+          # Use printf rather than a heredoc to avoid YAML/heredoc whitespace traps.
+          {
+            printf '%s\n' '[gdrive]'
+            printf '%s\n' 'type = drive'
+            printf '%s\n' 'scope = drive'
+            printf 'service_account_file = %s\n' "$sa_path"
+            printf 'root_folder_id = %s\n' "$GDRIVE_FOLDER_ID"
+          } > "$HOME/.config/rclone/rclone.conf"
           echo "Service account: $(jq -r .client_email "$sa_path")"
           rclone --config "$HOME/.config/rclone/rclone.conf" lsd gdrive: || {
             echo "::error::rclone could not list the target Drive folder. Make sure the folder is shared with the service account email."
