@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>Film Beamer · Beam files to your Google Drive</title>
+    <meta
+      name="description"
+      content="Beam files to Google Drive using GitHub Actions runners' fast internet."
+    />
+    <meta name="theme-color" content="#0b0d14" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Beamer" />
+    <meta name="application-name" content="Film Beamer" />
+    <meta name="format-detection" content="telephone=no" />
+
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+    <link rel="apple-touch-icon" href="./icon.svg" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="./style.css" />
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: [
+                "Inter",
+                "ui-sans-serif",
+                "system-ui",
+                "-apple-system",
+                "Segoe UI",
+                "Roboto",
+                "sans-serif",
+              ],
+            },
+            colors: {
+              ink: {
+                950: "#07080c",
+                900: "#0b0d14",
+                800: "#10131c",
+                700: "#161a26",
+                600: "#1f2533",
+              },
+              accent: {
+                500: "#7c5cff",
+                400: "#9d86ff",
+                300: "#bfb0ff",
+              },
+            },
+          },
+        },
+      };
+    </script>
+  </head>
+  <body class="min-h-screen bg-ink-950 text-slate-100 antialiased font-sans selection:bg-accent-500/30">
+    <div class="bg-grid pointer-events-none fixed inset-0 -z-10"></div>
+    <div class="bg-glow pointer-events-none fixed inset-0 -z-10"></div>
+
+    <header class="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 pt-[max(env(safe-area-inset-top),1.25rem)] sm:px-6 sm:pt-8">
+      <div class="flex min-w-0 items-center gap-3">
+        <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-accent-500 to-fuchsia-500 shadow-lg shadow-accent-500/30">
+          <span class="text-lg">🎬</span>
+        </div>
+        <div class="min-w-0">
+          <div class="truncate text-sm font-semibold tracking-tight">Film Beamer</div>
+          <div class="truncate text-xs text-slate-400">GitHub Actions → Google Drive</div>
+        </div>
+      </div>
+      <div class="flex shrink-0 items-center gap-1.5 sm:gap-2">
+        <button
+          id="install-btn"
+          hidden
+          class="rounded-lg border border-accent-400/30 bg-accent-500/15 px-3 py-1.5 text-xs font-medium text-accent-300 hover:bg-accent-500/25"
+        >
+          Install
+        </button>
+        <a
+          id="repo-link"
+          href="#"
+          target="_blank"
+          rel="noreferrer noopener"
+          class="hidden rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10 sm:inline-flex"
+          >GitHub</a
+        >
+        <button
+          id="settings-btn"
+          aria-label="Settings"
+          class="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+        >
+          <span class="sm:hidden">⚙︎</span>
+          <span class="hidden sm:inline">Settings</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="mx-auto max-w-5xl px-4 pb-[max(env(safe-area-inset-bottom),5rem)] pt-8 sm:px-6 sm:pt-12">
+      <section class="text-center">
+        <div class="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
+          <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-accent-400"></span>
+          Powered by GitHub Actions runners
+        </div>
+        <h1 class="mt-6 text-balance text-3xl font-semibold tracking-tight sm:text-5xl">
+          Beam any file to your Drive.
+          <span class="bg-gradient-to-r from-accent-300 via-accent-400 to-fuchsia-400 bg-clip-text text-transparent"
+            >On a gigabit pipe.</span
+          >
+        </h1>
+        <p class="mx-auto mt-4 max-w-xl text-pretty text-slate-400">
+          Paste a URL, hit beam. A GitHub Actions runner downloads it on a fast
+          connection and uploads it to your Google Drive — where you can stream
+          it without filling up your own pipe.
+        </p>
+      </section>
+
+      <section class="mt-10">
+        <form
+          id="beam-form"
+          class="glass mx-auto rounded-2xl border border-white/10 bg-ink-800/60 p-4 shadow-2xl shadow-black/40 backdrop-blur sm:p-5"
+        >
+          <label class="block">
+            <span class="text-xs font-medium uppercase tracking-wider text-slate-400">URL</span>
+            <input
+              id="url"
+              type="url"
+              required
+              autocomplete="url"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              inputmode="url"
+              placeholder="https://example.com/movie.mkv"
+              class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-4 py-3 text-base text-slate-100 placeholder:text-slate-500 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+            />
+            <button
+              type="button"
+              id="paste-btn"
+              class="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10"
+            >
+              <span>📋</span>
+              Paste from clipboard
+            </button>
+          </label>
+
+          <div class="mt-4 grid gap-4 sm:grid-cols-2">
+            <label class="block">
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Filename (optional)</span>
+              <input
+                id="filename"
+                type="text"
+                placeholder="my-movie"
+                class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              />
+            </label>
+            <label class="block">
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Subfolder on Drive (optional)</span>
+              <input
+                id="subfolder"
+                type="text"
+                placeholder="Movies/2026"
+                class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              />
+            </label>
+          </div>
+
+          <details class="mt-4 rounded-xl border border-white/5 bg-ink-900/60 p-3 text-sm text-slate-300">
+            <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-slate-400">
+              Advanced
+            </summary>
+            <div class="mt-3 grid gap-4 sm:grid-cols-3">
+              <label class="block">
+                <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Mode</span>
+                <select
+                  id="mode"
+                  class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+                >
+                  <option value="auto">Auto</option>
+                  <option value="aria2">Direct download (aria2)</option>
+                  <option value="ytdlp">Video site (yt-dlp)</option>
+                  <option value="curl">curl (single connection)</option>
+                </select>
+              </label>
+              <label class="block">
+                <span class="text-xs font-medium uppercase tracking-wider text-slate-400">yt-dlp format</span>
+                <input
+                  id="ytdlp_format"
+                  type="text"
+                  value="bv*+ba/b"
+                  class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+                />
+              </label>
+              <label class="block">
+                <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Max size (MB, 0 = ∞)</span>
+                <input
+                  id="max_size_mb"
+                  type="number"
+                  min="0"
+                  value="0"
+                  class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+                />
+              </label>
+            </div>
+          </details>
+
+          <div class="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p id="form-error" class="text-sm text-rose-300/90"></p>
+            <button
+              id="beam-btn"
+              type="submit"
+              class="group relative inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-accent-500 to-fuchsia-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-accent-500/30 transition hover:shadow-accent-500/50 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+            >
+              <span class="i-arrow group-hover:translate-x-0.5 transition-transform">🚀</span>
+              <span id="beam-btn-label">Beam to Drive</span>
+            </button>
+          </div>
+        </form>
+
+        <p
+          id="setup-hint"
+          class="mx-auto mt-3 hidden max-w-2xl text-center text-sm text-amber-300/90"
+        >
+          Set the GitHub repo and a personal access token in
+          <button class="underline" id="setup-hint-link">Settings</button> first.
+        </p>
+      </section>
+
+      <section class="mt-12">
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400">
+            Recent beams
+          </h2>
+          <button
+            id="refresh-btn"
+            class="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+          >
+            Refresh
+          </button>
+        </div>
+        <div
+          id="runs"
+          class="grid gap-2 rounded-2xl border border-white/5 bg-ink-800/40 p-2"
+        >
+          <div class="px-4 py-6 text-center text-sm text-slate-500">
+            No runs yet. Configure settings and beam your first file.
+          </div>
+        </div>
+      </section>
+
+      <footer class="mt-16 text-center text-xs text-slate-500">
+        Built for slow-internet evenings. Your PAT never leaves this browser.
+      </footer>
+    </main>
+
+    <!-- Settings dialog -->
+    <div
+      id="settings-dialog"
+      class="fixed inset-0 z-50 hidden items-center justify-center bg-black/60 p-4 backdrop-blur"
+    >
+      <div class="glass w-full max-w-md rounded-2xl border border-white/10 bg-ink-800/90 p-6 shadow-2xl">
+        <div class="flex items-start justify-between">
+          <div>
+            <h3 class="text-lg font-semibold">Settings</h3>
+            <p class="mt-1 text-xs text-slate-400">
+              Stored only in this browser (localStorage). Used to call the
+              GitHub API directly.
+            </p>
+          </div>
+          <button
+            id="settings-close"
+            class="rounded-lg p-1.5 text-slate-400 hover:bg-white/5"
+          >
+            ✕
+          </button>
+        </div>
+        <div class="mt-5 space-y-4">
+          <label class="block">
+            <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Repository (owner/repo)</span>
+            <input
+              id="cfg-repo"
+              type="text"
+              placeholder="newnout6-a11y/film"
+              class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+            />
+          </label>
+          <label class="block">
+            <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Default branch</span>
+            <input
+              id="cfg-branch"
+              type="text"
+              value="main"
+              class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+            />
+          </label>
+          <label class="block">
+            <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Workflow file</span>
+            <input
+              id="cfg-workflow"
+              type="text"
+              value="download-to-drive.yml"
+              class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+            />
+          </label>
+          <label class="block">
+            <span class="text-xs font-medium uppercase tracking-wider text-slate-400">
+              GitHub PAT
+              <span class="ml-1 text-slate-500 normal-case">(fine-grained: Actions: Read & Write on this repo)</span>
+            </span>
+            <input
+              id="cfg-token"
+              type="password"
+              placeholder="github_pat_..."
+              class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+            />
+          </label>
+        </div>
+        <div class="mt-6 flex items-center justify-between">
+          <button
+            id="settings-clear"
+            class="rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-200 hover:bg-rose-500/20"
+          >
+            Clear saved
+          </button>
+          <button
+            id="settings-save"
+            class="rounded-xl bg-gradient-to-r from-accent-500 to-fuchsia-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent-500/30"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toasts -->
+    <div
+      id="toasts"
+      class="fixed left-1/2 z-50 flex w-[min(22rem,calc(100vw-1.5rem))] -translate-x-1/2 flex-col gap-2 sm:left-auto sm:right-6 sm:translate-x-0"
+      style="bottom: max(env(safe-area-inset-bottom), 1.5rem);"
+    ></div>
+
+    <script src="./app.js"></script>
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("./sw.js").catch((err) => {
+            console.warn("SW register failed:", err);
+          });
+        });
+      }
+    </script>
+  </body>
+</html>
