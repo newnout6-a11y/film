@@ -701,12 +701,10 @@ function openSettings() {
     fetchDefaultBranch().then(updateBranchHint).catch(() => {});
   }
   $("#settings-dialog").classList.remove("hidden");
-  $("#settings-dialog").classList.add("flex");
 }
 
 function closeSettings() {
   $("#settings-dialog").classList.add("hidden");
-  $("#settings-dialog").classList.remove("flex");
 }
 
 function bindSettings() {
@@ -2032,7 +2030,6 @@ function openProgressDialog(title) {
   $("#progress-link").classList.add("hidden");
   renderProgressStages([]);
   dlg.classList.remove("hidden");
-  dlg.classList.add("flex");
   _progressActive = true;
 }
 
@@ -2040,7 +2037,6 @@ function closeProgressDialog() {
   const dlg = $("#progress-dialog");
   if (!dlg) return;
   dlg.classList.add("hidden");
-  dlg.classList.remove("flex");
   _progressActive = false;
 }
 
