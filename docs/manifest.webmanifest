@@ -1,7 +1,9 @@
 {
+  "lang": "ru",
+  "dir": "ltr",
   "name": "Film Beamer",
-  "short_name": "Beamer",
-  "description": "Beam files to Google Drive over GitHub Actions' fast pipe.",
+  "short_name": "Бимер",
+  "description": "Закидывает файлы в Google Drive через быстрый канал GitHub Actions.",
   "id": "/film/",
   "start_url": "./",
   "scope": "./",
@@ -27,9 +29,9 @@
   ],
   "shortcuts": [
     {
-      "name": "New beam",
-      "short_name": "Beam",
-      "description": "Start a new download",
+      "name": "Новый заброс",
+      "short_name": "Заброс",
+      "description": "Начать новую загрузку",
       "url": "./?action=beam"
     }
   ]
