@@ -14,8 +14,19 @@ const defaultCfg = {
   token: "",
 };
 
-// Cached result of GET /repos/{owner}/{repo}.default_branch, keyed by repo.
+// Cached result of branch autodetect, keyed by repo. Stores the *resolved*
+// branch we'd actually dispatch against (after the stale-default fallback).
 const defaultBranchCache = new Map();
+
+// Branches we'll fall back to when the repo's default_branch looks like a
+// short-lived feature branch — in priority order. The first one that actually
+// exists on the remote wins.
+const FALLBACK_BRANCHES = ["base", "main", "master"];
+
+// Pattern for "this looks like a feature branch, not a long-lived trunk".
+// We use this both for migrating saved overrides and for ignoring a stale
+// default_branch returned by the GitHub API.
+const STALE_BRANCH_RE = /^(devin|gh-pages|feature|temp)\//i;
 
 // One-time migration: drop saved Devin/auto-generated feature branches that
 // users picked up from earlier sessions when GitHub Pages was hosted off them.
@@ -23,8 +34,7 @@ const defaultBranchCache = new Map();
 // on workflow_dispatch ("Unexpected inputs provided"). Empty == autodetect.
 function migrateCfg(cfg) {
   if (!cfg || typeof cfg.branch !== "string") return cfg;
-  const stale = /^(devin|gh-pages|feature|temp)\//i.test(cfg.branch);
-  if (stale) {
+  if (STALE_BRANCH_RE.test(cfg.branch)) {
     cfg.branch = "";
   }
   return cfg;
@@ -182,6 +192,21 @@ class GitHubClient {
     return data && data.default_branch ? data.default_branch : null;
   }
 
+  // Returns true if `branch` exists on the remote, false otherwise.
+  async branchExists(branch) {
+    if (!branch) return false;
+    try {
+      await this._fetch(
+        `/repos/${this.cfg.repo}/branches/${encodeURIComponent(branch)}`
+      );
+      return true;
+    } catch (err) {
+      // Treat any error (404, 403, network) as "not usable" — the caller
+      // will move on to the next candidate.
+      return false;
+    }
+  }
+
   async getActionsPublicKey() {
     return this._fetch(`/repos/${this.cfg.repo}/actions/secrets/public-key`);
   }
@@ -252,22 +277,37 @@ async function uploadGitHubSecret(name, value) {
   return gh.putActionsSecret(name, encrypted, pk.key_id);
 }
 
-// Resolve the actual repo default_branch via the API (cached for the page).
-// Used both for autodetect and for warning the user when their saved override
-// is stale.
+// Resolve the branch we should dispatch workflow_dispatch against.
+//
+// We prefer GET /repos/{owner}/{repo}.default_branch, but if that returns a
+// short-lived Devin/feature pattern (`devin/*`, `gh-pages/*`, `feature/*`,
+// `temp/*`), we treat it as stale: those branches usually carry an outdated
+// workflow file and produce 422 "Unexpected inputs provided" errors when the
+// frontend has already moved on. In that case we probe a small list of
+// canonical branches (`base`, `main`, `master`) and use the first one that
+// actually exists on the remote. Result is cached per repo for the page.
 async function fetchDefaultBranch() {
   if (!cfg.repo) return null;
   if (defaultBranchCache.has(cfg.repo)) {
     return defaultBranchCache.get(cfg.repo);
   }
+  const gh = new GitHubClient(cfg);
+  let branch = null;
   try {
-    const gh = new GitHubClient(cfg);
-    const branch = await gh.getRepoDefaultBranch();
-    if (branch) defaultBranchCache.set(cfg.repo, branch);
-    return branch;
+    branch = await gh.getRepoDefaultBranch();
   } catch {
-    return null;
+    branch = null;
   }
+  if (branch && STALE_BRANCH_RE.test(branch)) {
+    for (const candidate of FALLBACK_BRANCHES) {
+      if (await gh.branchExists(candidate)) {
+        branch = candidate;
+        break;
+      }
+    }
+  }
+  if (branch) defaultBranchCache.set(cfg.repo, branch);
+  return branch;
 }
 
 // Returns the branch to dispatch against. If the user explicitly set one in
@@ -477,6 +517,29 @@ function bindQualityToggle() {
   sync();
 }
 
+// Convert a raw GitHubClient error from workflow_dispatch into a human
+// message. Most generic errors pass through unchanged; we special-case the
+// 422 "Unexpected inputs provided" surface because it points at a very
+// specific real-world problem (the workflow file on the dispatched branch is
+// older than the form), and the GitHub error string alone doesn't make that
+// obvious to the user.
+function explainDispatchError(err, ref) {
+  const raw = (err && err.message) || String(err || "");
+  if (
+    /\b422\b/.test(raw) &&
+    /Unexpected inputs provided/i.test(raw)
+  ) {
+    const branchPart = ref ? ` (\`${ref}\`)` : "";
+    return (
+      `Workflow на ветке${branchPart} устарел и не знает новых полей формы. ` +
+      "Замёрж base в эту ветку (или поменяй default branch репо на base в Settings → Branches), " +
+      "затем нажми «Закинуть» ещё раз. Полная ошибка: " +
+      raw
+    );
+  }
+  return raw;
+}
+
 function bindForm() {
   $("#beam-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -518,9 +581,10 @@ function bindForm() {
     const oldLabel = lbl.textContent;
     lbl.textContent = "Отправляем…";
 
+    let ref = null;
     try {
       const gh = new GitHubClient(cfg);
-      const ref = await resolveBranch();
+      ref = await resolveBranch();
       if (!ref) {
         throw new Error(
           "Не получилось определить ветку репо — укажи её вручную в Настройках."
@@ -533,8 +597,9 @@ function bindForm() {
       setTimeout(() => refreshRuns(true), 1500);
     } catch (err) {
       console.error(err);
-      errEl.textContent = err.message || String(err);
-      toast(`Ошибка: ${err.message || err}`, "error");
+      const msg = explainDispatchError(err, ref);
+      errEl.textContent = msg;
+      toast(`Ошибка: ${msg}`, "error");
     } finally {
       btn.disabled = false;
       lbl.textContent = oldLabel;
