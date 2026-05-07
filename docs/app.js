@@ -158,6 +158,75 @@ class GitHubClient {
     const data = await this._fetch(`/repos/${this.cfg.repo}`);
     return data && data.default_branch ? data.default_branch : null;
   }
+
+  async getActionsPublicKey() {
+    return this._fetch(`/repos/${this.cfg.repo}/actions/secrets/public-key`);
+  }
+
+  async putActionsSecret(name, encryptedValue, keyId) {
+    return this._fetch(
+      `/repos/${this.cfg.repo}/actions/secrets/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          encrypted_value: encryptedValue,
+          key_id: keyId,
+        }),
+      }
+    );
+  }
+}
+
+// ---------- libsodium (lazy-loaded for in-app secret uploads) ----------
+const SODIUM_CDN_URL =
+  "https://cdn.jsdelivr.net/npm/libsodium-wrappers@0.7.13/dist/browsers-sumo/sodium.js";
+let _sodiumLoading = null;
+function loadSodium() {
+  if (window.sodium && window.sodium.ready) {
+    return window.sodium.ready.then(() => window.sodium);
+  }
+  if (_sodiumLoading) return _sodiumLoading;
+  _sodiumLoading = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = SODIUM_CDN_URL;
+    s.crossOrigin = "anonymous";
+    s.onload = () => {
+      if (!window.sodium) {
+        return reject(new Error("libsodium не загрузился."));
+      }
+      window.sodium.ready.then(() => resolve(window.sodium));
+    };
+    s.onerror = () =>
+      reject(
+        new Error(
+          "Не удалось загрузить libsodium с CDN. Проверь интернет или расширения браузера."
+        )
+      );
+    document.head.appendChild(s);
+  });
+  return _sodiumLoading;
+}
+
+async function ghEncryptSecret(plaintext, publicKeyB64) {
+  const sodium = await loadSodium();
+  const msg = sodium.from_string(plaintext);
+  const key = sodium.from_base64(
+    publicKeyB64,
+    sodium.base64_variants.ORIGINAL
+  );
+  const enc = sodium.crypto_box_seal(msg, key);
+  return sodium.to_base64(enc, sodium.base64_variants.ORIGINAL);
+}
+
+async function uploadGitHubSecret(name, value) {
+  const gh = new GitHubClient(cfg);
+  const pk = await gh.getActionsPublicKey();
+  if (!pk || !pk.key || !pk.key_id) {
+    throw new Error("Репо не вернул публичный ключ для секретов.");
+  }
+  const encrypted = await ghEncryptSecret(value, pk.key);
+  return gh.putActionsSecret(name, encrypted, pk.key_id);
 }
 
 // Returns the branch to dispatch against. If the user explicitly set one in
@@ -446,6 +515,174 @@ function bindInstall() {
   });
 }
 
+// ---------- Drive secret uploader ----------
+function extractFolderId(raw) {
+  const trimmed = (raw || "").trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/folders\/([A-Za-z0-9_-]+)/);
+  const id = match ? match[1] : trimmed;
+  return /^[A-Za-z0-9_-]{10,}$/.test(id) ? id : null;
+}
+
+function parseServiceAccountJson(raw) {
+  const trimmed = (raw || "").trim();
+  if (!trimmed) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (e) {
+    throw new Error(`JSON невалиден: ${e.message}`);
+  }
+  if (parsed.type !== "service_account" || !parsed.client_email) {
+    throw new Error(
+      "Это не похоже на service-account JSON (нет type=service_account / client_email)."
+    );
+  }
+  return { json: trimmed, email: parsed.client_email };
+}
+
+function setDriveStatus(text, kind = "info") {
+  const el = $("#drive-status");
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.remove(
+    "hidden",
+    "text-slate-400",
+    "text-emerald-300",
+    "text-rose-300"
+  );
+  if (!text) {
+    el.classList.add("hidden");
+    return;
+  }
+  const cls =
+    kind === "success"
+      ? "text-emerald-300"
+      : kind === "error"
+      ? "text-rose-300"
+      : "text-slate-400";
+  el.classList.add(cls);
+}
+
+function updateServiceAccountEmail() {
+  const box = $("#drive-sa-email");
+  const valEl = $("#drive-sa-email-value");
+  const raw = $("#drive-json").value;
+  if (!raw.trim()) {
+    box.classList.add("hidden");
+    return;
+  }
+  try {
+    const { email } = parseServiceAccountJson(raw);
+    valEl.textContent = email;
+    box.classList.remove("hidden");
+  } catch {
+    box.classList.add("hidden");
+  }
+}
+
+function bindDriveUpload() {
+  const btn = $("#drive-upload");
+  if (!btn) return;
+  const jsonField = $("#drive-json");
+  const folderField = $("#drive-folder");
+  const fileInput = $("#drive-json-file");
+  const filePicker = $("#drive-json-pick");
+
+  jsonField.addEventListener("input", updateServiceAccountEmail);
+
+  filePicker.addEventListener("click", (e) => {
+    e.preventDefault();
+    fileInput.click();
+  });
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    try {
+      jsonField.value = await file.text();
+      updateServiceAccountEmail();
+    } catch (err) {
+      setDriveStatus(`Не удалось прочитать файл: ${err.message || err}`, "error");
+    }
+  });
+
+  btn.addEventListener("click", async () => {
+    setDriveStatus("");
+    if (!cfg.repo) {
+      setDriveStatus("Сначала укажи репозиторий в Настройках выше.", "error");
+      return;
+    }
+    if (!cfg.token) {
+      setDriveStatus(
+        "Сначала введи GitHub-токен выше и нажми «Сохранить».",
+        "error"
+      );
+      return;
+    }
+
+    const folderRaw = folderField.value.trim();
+    const jsonRaw = jsonField.value.trim();
+    if (!folderRaw && !jsonRaw) {
+      setDriveStatus(
+        "Заполни хотя бы одно поле — JSON или ID папки.",
+        "error"
+      );
+      return;
+    }
+
+    let folderId = null;
+    if (folderRaw) {
+      folderId = extractFolderId(folderRaw);
+      if (!folderId) {
+        setDriveStatus(
+          "Не похоже на ID папки Drive. Вставь URL вида https://drive.google.com/drive/folders/... или сам ID.",
+          "error"
+        );
+        return;
+      }
+    }
+
+    let saInfo = null;
+    if (jsonRaw) {
+      try {
+        saInfo = parseServiceAccountJson(jsonRaw);
+      } catch (err) {
+        setDriveStatus(err.message || String(err), "error");
+        return;
+      }
+    }
+
+    btn.disabled = true;
+    setDriveStatus("Шифрую в браузере и отправляю…");
+    try {
+      const uploaded = [];
+      if (saInfo) {
+        await uploadGitHubSecret("GDRIVE_SERVICE_ACCOUNT", saInfo.json);
+        uploaded.push("GDRIVE_SERVICE_ACCOUNT");
+      }
+      if (folderId) {
+        await uploadGitHubSecret("GDRIVE_FOLDER_ID", folderId);
+        uploaded.push("GDRIVE_FOLDER_ID");
+      }
+      const tail = saInfo
+        ? ` Не забудь расшарить папку Drive на ${saInfo.email}.`
+        : "";
+      setDriveStatus(`Секреты обновлены: ${uploaded.join(", ")}.${tail}`, "success");
+      toast("Секреты Drive загружены в GitHub.", "success");
+      jsonField.value = "";
+      updateServiceAccountEmail();
+    } catch (err) {
+      const msg = err.message || String(err);
+      const hint = /\b403\b/.test(msg)
+        ? " У токена должно быть право «Secrets: Read and Write». Перевыпусти PAT с этим разрешением."
+        : "";
+      setDriveStatus(`Ошибка: ${msg}${hint}`, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 // ---------- Paste-from-clipboard helper ----------
 function bindPaste() {
   const btn = $("#paste-btn");
@@ -471,6 +708,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindForm();
   bindInstall();
   bindPaste();
+  bindDriveUpload();
   $("#refresh-btn").addEventListener("click", () => refreshRuns(true));
 
   // Pre-fill repo from URL if not configured yet.
