@@ -8,10 +8,14 @@ const STORE_KEY = "film-beamer.cfg.v1";
 
 const defaultCfg = {
   repo: "",
-  branch: "main",
+  // Empty branch = autodetect via GitHub API (default_branch).
+  branch: "",
   workflow: "download-to-drive.yml",
   token: "",
 };
+
+// Cached result of GET /repos/{owner}/{repo}.default_branch, keyed by repo.
+const defaultBranchCache = new Map();
 
 function loadCfg() {
   try {
@@ -149,6 +153,37 @@ class GitHubClient {
     )}/runs?per_page=${perPage}`;
     return this._fetch(path);
   }
+
+  async getRepoDefaultBranch() {
+    const data = await this._fetch(`/repos/${this.cfg.repo}`);
+    return data && data.default_branch ? data.default_branch : null;
+  }
+}
+
+// Returns the branch to dispatch against. If the user explicitly set one in
+// Settings, use it; otherwise look up the repo's default_branch via the API
+// and cache it for the lifetime of the page.
+async function resolveBranch() {
+  if (cfg.branch) return cfg.branch;
+  if (!cfg.repo) return null;
+  if (defaultBranchCache.has(cfg.repo)) {
+    return defaultBranchCache.get(cfg.repo);
+  }
+  const gh = new GitHubClient(cfg);
+  const branch = await gh.getRepoDefaultBranch();
+  if (branch) {
+    defaultBranchCache.set(cfg.repo, branch);
+    updateBranchHint(branch);
+  }
+  return branch;
+}
+
+function updateBranchHint(branch) {
+  const hint = $("#cfg-branch-hint");
+  if (!hint) return;
+  hint.textContent = branch
+    ? `Автоопределена: ${branch}`
+    : "";
 }
 
 // ---------- UI state ----------
@@ -167,7 +202,8 @@ function ensureRepoLink() {
 }
 
 function isReady() {
-  return Boolean(cfg.repo && cfg.token && cfg.workflow && cfg.branch);
+  // Branch is optional — empty means “autodetect via API”.
+  return Boolean(cfg.repo && cfg.token && cfg.workflow);
 }
 
 function showSetupHint(show) {
@@ -176,9 +212,12 @@ function showSetupHint(show) {
 
 function openSettings() {
   $("#cfg-repo").value = cfg.repo || inferRepoFromUrl();
-  $("#cfg-branch").value = cfg.branch || "main";
+  $("#cfg-branch").value = cfg.branch || "";
   $("#cfg-workflow").value = cfg.workflow || "download-to-drive.yml";
   $("#cfg-token").value = cfg.token || "";
+  // Show the cached autodetected branch (if known) under the field.
+  const cached = cfg.repo ? defaultBranchCache.get(cfg.repo) : null;
+  updateBranchHint(cached || "");
   $("#settings-dialog").classList.remove("hidden");
   $("#settings-dialog").classList.add("flex");
 }
@@ -206,7 +245,8 @@ function bindSettings() {
   $("#settings-save").addEventListener("click", () => {
     const next = {
       repo: $("#cfg-repo").value.trim(),
-      branch: $("#cfg-branch").value.trim() || "main",
+      // Empty branch is allowed — it means “autodetect via API”.
+      branch: $("#cfg-branch").value.trim(),
       workflow: $("#cfg-workflow").value.trim() || "download-to-drive.yml",
       token: $("#cfg-token").value.trim(),
     };
@@ -265,7 +305,13 @@ function bindForm() {
 
     try {
       const gh = new GitHubClient(cfg);
-      await gh.dispatchWorkflow({ ref: cfg.branch, inputs });
+      const ref = await resolveBranch();
+      if (!ref) {
+        throw new Error(
+          "Не получилось определить ветку репо — укажи её вручную в Настройках."
+        );
+      }
+      await gh.dispatchWorkflow({ ref, inputs });
       toast("Запущено — раннер качает…", "success");
       $("#url").value = "";
       // GitHub sometimes takes a beat to register the run.
