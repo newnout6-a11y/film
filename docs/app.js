@@ -17,12 +17,35 @@ const defaultCfg = {
 // Cached result of GET /repos/{owner}/{repo}.default_branch, keyed by repo.
 const defaultBranchCache = new Map();
 
+// One-time migration: drop saved Devin/auto-generated feature branches that
+// users picked up from earlier sessions when GitHub Pages was hosted off them.
+// Those branches usually carry an outdated workflow file and cause 422 errors
+// on workflow_dispatch ("Unexpected inputs provided"). Empty == autodetect.
+function migrateCfg(cfg) {
+  if (!cfg || typeof cfg.branch !== "string") return cfg;
+  const stale = /^(devin|gh-pages|feature|temp)\//i.test(cfg.branch);
+  if (stale) {
+    cfg.branch = "";
+  }
+  return cfg;
+}
+
 function loadCfg() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
     if (!raw) return { ...defaultCfg };
     const parsed = JSON.parse(raw);
-    return { ...defaultCfg, ...parsed };
+    const merged = { ...defaultCfg, ...parsed };
+    const migrated = migrateCfg(merged);
+    // Persist the migration so it only happens once.
+    if (migrated.branch !== (parsed.branch || "")) {
+      try {
+        localStorage.setItem(STORE_KEY, JSON.stringify(migrated));
+      } catch {
+        /* noop */
+      }
+    }
+    return migrated;
   } catch {
     return { ...defaultCfg };
   }
@@ -229,30 +252,52 @@ async function uploadGitHubSecret(name, value) {
   return gh.putActionsSecret(name, encrypted, pk.key_id);
 }
 
-// Returns the branch to dispatch against. If the user explicitly set one in
-// Settings, use it; otherwise look up the repo's default_branch via the API
-// and cache it for the lifetime of the page.
-async function resolveBranch() {
-  if (cfg.branch) return cfg.branch;
+// Resolve the actual repo default_branch via the API (cached for the page).
+// Used both for autodetect and for warning the user when their saved override
+// is stale.
+async function fetchDefaultBranch() {
   if (!cfg.repo) return null;
   if (defaultBranchCache.has(cfg.repo)) {
     return defaultBranchCache.get(cfg.repo);
   }
-  const gh = new GitHubClient(cfg);
-  const branch = await gh.getRepoDefaultBranch();
-  if (branch) {
-    defaultBranchCache.set(cfg.repo, branch);
-    updateBranchHint(branch);
+  try {
+    const gh = new GitHubClient(cfg);
+    const branch = await gh.getRepoDefaultBranch();
+    if (branch) defaultBranchCache.set(cfg.repo, branch);
+    return branch;
+  } catch {
+    return null;
   }
-  return branch;
 }
 
-function updateBranchHint(branch) {
+// Returns the branch to dispatch against. If the user explicitly set one in
+// Settings, use it; otherwise look up the repo's default_branch via the API
+// and cache it for the lifetime of the page. Always refreshes the hint so the
+// user sees both the override and the actual default branch.
+async function resolveBranch() {
+  const def = await fetchDefaultBranch();
+  updateBranchHint(def);
+  if (cfg.branch) return cfg.branch;
+  return def;
+}
+
+function updateBranchHint(defaultBranch) {
   const hint = $("#cfg-branch-hint");
   if (!hint) return;
-  hint.textContent = branch
-    ? `Автоопределена: ${branch}`
-    : "";
+  if (cfg.branch) {
+    if (defaultBranch && defaultBranch !== cfg.branch) {
+      hint.textContent = `Вручную: ${cfg.branch} (дефолт репо: ${defaultBranch}). Очисти поле, чтобы использовать дефолт.`;
+      hint.className = "text-xs mt-1 text-amber-400";
+    } else {
+      hint.textContent = `Вручную: ${cfg.branch}`;
+      hint.className = "text-xs mt-1 text-slate-500";
+    }
+  } else {
+    hint.textContent = defaultBranch
+      ? `Автоопределена: ${defaultBranch}`
+      : "";
+    hint.className = "text-xs mt-1 text-slate-500";
+  }
 }
 
 // ---------- UI state ----------
@@ -284,9 +329,13 @@ function openSettings() {
   $("#cfg-branch").value = cfg.branch || "";
   $("#cfg-workflow").value = cfg.workflow || "download-to-drive.yml";
   $("#cfg-token").value = cfg.token || "";
-  // Show the cached autodetected branch (if known) under the field.
+  // Refresh the hint with whatever's already cached, then trigger an async
+  // fetch in the background to populate it for the very first open.
   const cached = cfg.repo ? defaultBranchCache.get(cfg.repo) : null;
-  updateBranchHint(cached || "");
+  updateBranchHint(cached || null);
+  if (cfg.repo && !cached) {
+    fetchDefaultBranch().then(updateBranchHint).catch(() => {});
+  }
   $("#settings-dialog").classList.remove("hidden");
   $("#settings-dialog").classList.add("flex");
 }
