@@ -1,0 +1,84 @@
+name: Search trackers
+
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: "Search query (movie/show title)"
+        required: true
+        type: string
+
+concurrency:
+  group: search-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  search:
+    name: Search
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install --quiet "requests>=2.31" "beautifulsoup4>=4.12" "lxml>=4.9"
+
+      - name: Prepare results dir
+        run: mkdir -p results
+
+      - name: Search Pirate Bay (apibay)
+        if: always()
+        continue-on-error: true
+        env:
+          QUERY: ${{ inputs.query }}
+        run: python scripts/search/apibay.py
+
+      - name: Search RuTracker
+        if: always()
+        continue-on-error: true
+        env:
+          QUERY: ${{ inputs.query }}
+          RUTRACKER_USERNAME: ${{ secrets.RUTRACKER_USERNAME }}
+          RUTRACKER_PASSWORD: ${{ secrets.RUTRACKER_PASSWORD }}
+        run: python scripts/search/rutracker.py
+
+      - name: Search Kinozal
+        if: always()
+        continue-on-error: true
+        env:
+          QUERY: ${{ inputs.query }}
+          KINOZAL_USERNAME: ${{ secrets.KINOZAL_USERNAME }}
+          KINOZAL_PASSWORD: ${{ secrets.KINOZAL_PASSWORD }}
+        run: python scripts/search/kinozal.py
+
+      - name: Search NNM-Club
+        if: always()
+        continue-on-error: true
+        env:
+          QUERY: ${{ inputs.query }}
+          NNM_USERNAME: ${{ secrets.NNM_USERNAME }}
+          NNM_PASSWORD: ${{ secrets.NNM_PASSWORD }}
+        run: python scripts/search/nnmclub.py
+
+      - name: Aggregate results
+        if: always()
+        env:
+          QUERY: ${{ inputs.query }}
+        run: python scripts/search/aggregate.py
+
+      - name: Upload search artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-results
+          path: results.json
+          retention-days: 1
+          if-no-files-found: error

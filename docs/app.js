@@ -780,6 +780,582 @@ function bindDriveUpload() {
   });
 }
 
+// ---------- Tracker creds uploader ----------
+const TRACKER_FIELDS = [
+  {
+    id: "rutracker",
+    label: "RuTracker",
+    userInput: "#trk-rutracker-user",
+    passInput: "#trk-rutracker-pass",
+    userSecret: "RUTRACKER_USERNAME",
+    passSecret: "RUTRACKER_PASSWORD",
+  },
+  {
+    id: "kinozal",
+    label: "Kinozal",
+    userInput: "#trk-kinozal-user",
+    passInput: "#trk-kinozal-pass",
+    userSecret: "KINOZAL_USERNAME",
+    passSecret: "KINOZAL_PASSWORD",
+  },
+  {
+    id: "nnm",
+    label: "NNM-Club",
+    userInput: "#trk-nnm-user",
+    passInput: "#trk-nnm-pass",
+    userSecret: "NNM_USERNAME",
+    passSecret: "NNM_PASSWORD",
+  },
+];
+
+function setTrackersStatus(text, kind = "info") {
+  const el = $("#trackers-status");
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.remove(
+    "hidden",
+    "text-slate-400",
+    "text-emerald-300",
+    "text-rose-300"
+  );
+  if (!text) {
+    el.classList.add("hidden");
+    return;
+  }
+  const cls =
+    kind === "success"
+      ? "text-emerald-300"
+      : kind === "error"
+      ? "text-rose-300"
+      : "text-slate-400";
+  el.classList.add(cls);
+}
+
+function bindTrackersUpload() {
+  const btn = $("#trackers-upload");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    setTrackersStatus("");
+    if (!cfg.repo) {
+      setTrackersStatus("Сначала укажи репозиторий в Настройках выше.", "error");
+      return;
+    }
+    if (!cfg.token) {
+      setTrackersStatus(
+        "Сначала введи GitHub-токен выше и нажми «Сохранить».",
+        "error"
+      );
+      return;
+    }
+
+    const pairs = [];
+    const errors = [];
+    for (const t of TRACKER_FIELDS) {
+      const u = $(t.userInput).value.trim();
+      const p = $(t.passInput).value;
+      if (!u && !p) continue;
+      if (!u || !p) {
+        errors.push(t.label);
+        continue;
+      }
+      pairs.push({ name: t.userSecret, value: u, label: t.label });
+      pairs.push({ name: t.passSecret, value: p, label: t.label });
+    }
+
+    if (errors.length) {
+      setTrackersStatus(
+        `Заполни и логин, и пароль: ${errors.join(", ")}.`,
+        "error"
+      );
+      return;
+    }
+    if (!pairs.length) {
+      setTrackersStatus(
+        "Нечего загружать — заполни хотя бы один трекер.",
+        "error"
+      );
+      return;
+    }
+
+    btn.disabled = true;
+    setTrackersStatus("Шифрую в браузере и отправляю…");
+    try {
+      const uploaded = [];
+      for (const pair of pairs) {
+        await uploadGitHubSecret(pair.name, pair.value);
+        uploaded.push(pair.name);
+      }
+      setTrackersStatus(
+        `Секреты обновлены: ${uploaded.join(", ")}.`,
+        "success"
+      );
+      toast("Секреты трекеров загружены в GitHub.", "success");
+      for (const t of TRACKER_FIELDS) {
+        $(t.passInput).value = "";
+      }
+    } catch (err) {
+      const msg = err.message || String(err);
+      const hint = /\b403\b/.test(msg)
+        ? " У токена должно быть право «Secrets: Read and Write»."
+        : "";
+      setTrackersStatus(`Ошибка: ${msg}${hint}`, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+// ---------- Tracker search ----------
+const SEARCH_WORKFLOW = "search.yml";
+const SEARCH_RESULTS_ARTIFACT = "search-results";
+const JSZIP_CDN_URL =
+  "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
+let _jszipLoading = null;
+function loadJSZip() {
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  if (_jszipLoading) return _jszipLoading;
+  _jszipLoading = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = JSZIP_CDN_URL;
+    s.crossOrigin = "anonymous";
+    s.onload = () =>
+      window.JSZip
+        ? resolve(window.JSZip)
+        : reject(new Error("JSZip не загрузился."));
+    s.onerror = () =>
+      reject(
+        new Error(
+          "Не удалось загрузить JSZip с CDN. Проверь интернет / расширения."
+        )
+      );
+    document.head.appendChild(s);
+  });
+  return _jszipLoading;
+}
+
+// Stage names mirror the step names in .github/workflows/search.yml so the UI
+// can render real-time progress just by polling /jobs.
+const SEARCH_STAGES = [
+  { name: "RuTracker", match: /rutracker/i },
+  { name: "Pirate Bay", match: /pirate\s*bay|apibay/i },
+  { name: "Kinozal", match: /kinozal/i },
+  { name: "NNM-Club", match: /nnm/i },
+  { name: "Свод результатов", match: /aggregate|свод/i },
+  { name: "Загрузка артефакта", match: /artifact|upload/i },
+];
+
+const STAGE_ICONS = {
+  pending: "○",
+  in_progress: "◐",
+  success: "●",
+  failure: "×",
+  skipped: "·",
+  cancelled: "·",
+  neutral: "●",
+};
+
+function setSearchError(text) {
+  const el = $("#search-error");
+  if (el) el.textContent = text || "";
+}
+
+function renderSearchStages(steps) {
+  const wrap = $("#search-progress");
+  const list = $("#search-stages");
+  if (!wrap || !list) return;
+  wrap.classList.remove("hidden");
+  list.innerHTML = "";
+  for (const stage of SEARCH_STAGES) {
+    const step = steps.find((s) => stage.match.test(s.name || ""));
+    let key = "pending";
+    if (step) {
+      if (step.status === "completed") {
+        key = step.conclusion || "success";
+      } else if (step.status === "in_progress" || step.status === "queued") {
+        key = "in_progress";
+      }
+    }
+    const li = document.createElement("li");
+    li.className = "flex items-center gap-2 text-sm";
+    const icon = document.createElement("span");
+    icon.className =
+      key === "in_progress"
+        ? "text-accent-300 animate-pulse"
+        : key === "failure" || key === "cancelled" || key === "timed_out"
+        ? "text-rose-300"
+        : key === "success" || key === "neutral"
+        ? "text-emerald-300"
+        : key === "skipped"
+        ? "text-slate-500"
+        : "text-slate-500";
+    icon.textContent = STAGE_ICONS[key] || "○";
+    const label = document.createElement("span");
+    label.className =
+      key === "pending" ? "text-slate-400" : "text-slate-100";
+    label.textContent = stage.name;
+    const sub = document.createElement("span");
+    sub.className = "ml-auto text-xs text-slate-500";
+    sub.textContent =
+      key === "in_progress"
+        ? "идёт"
+        : key === "success"
+        ? "готово"
+        : key === "failure"
+        ? "ошибка"
+        : key === "skipped"
+        ? "пропущен (нет логина)"
+        : key === "cancelled"
+        ? "отменён"
+        : "ждёт";
+    li.appendChild(icon);
+    li.appendChild(label);
+    li.appendChild(sub);
+    list.appendChild(li);
+  }
+}
+
+function formatBytes(n) {
+  if (!n || n <= 0) return "—";
+  const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${units[i]}`;
+}
+
+function renderSearchResults(items) {
+  const wrap = $("#search-results");
+  const list = $("#search-results-list");
+  const count = $("#search-results-count");
+  if (!wrap || !list) return;
+  wrap.classList.remove("hidden");
+  list.innerHTML = "";
+  count.textContent = items.length ? `${items.length} шт.` : "";
+  if (!items.length) {
+    const empty = document.createElement("li");
+    empty.className =
+      "rounded-xl border border-white/10 bg-ink-900/40 p-3 text-sm text-slate-400";
+    empty.textContent =
+      "Ничего не нашлось. Попробуй другой запрос или добавь логин трекера в Настройках.";
+    list.appendChild(empty);
+    return;
+  }
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.className =
+      "group flex items-start gap-3 rounded-xl border border-white/10 bg-ink-900/60 p-3 hover:border-accent-400/40";
+
+    const meta = document.createElement("div");
+    meta.className = "min-w-0 grow";
+    const title = document.createElement("div");
+    title.className = "truncate text-sm font-medium text-slate-100";
+    title.textContent = item.title || "(без названия)";
+    const sub = document.createElement("div");
+    sub.className = "mt-0.5 truncate text-xs text-slate-500";
+    const seedersText =
+      typeof item.seeders === "number" ? `🌱 ${item.seeders}` : "🌱 ?";
+    const sizeText = item.size ? formatBytes(item.size) : "—";
+    sub.textContent = `${item.tracker} · ${sizeText} · ${seedersText}`;
+    meta.appendChild(title);
+    meta.appendChild(sub);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className =
+      "shrink-0 rounded-lg bg-gradient-to-r from-accent-500 to-fuchsia-500 px-3 py-1.5 text-xs font-semibold text-white shadow-lg shadow-accent-500/30 disabled:cursor-not-allowed disabled:opacity-60";
+    btn.textContent = "Закинуть";
+    btn.addEventListener("click", () => beamMagnet(item, btn));
+
+    li.appendChild(meta);
+    li.appendChild(btn);
+    list.appendChild(li);
+  }
+}
+
+async function beamMagnet(item, btn) {
+  if (!item || !item.magnet) {
+    toast("У этого результата нет магнет-ссылки.", "error");
+    return;
+  }
+  $("#url").value = item.magnet;
+  $("#filename").value = item.title || "";
+  setSearchError("");
+  if (!isReady()) {
+    showSetupHint(true);
+    openSettings();
+    return;
+  }
+  btn.disabled = true;
+  const oldLabel = btn.textContent;
+  btn.textContent = "Закидываем…";
+  try {
+    const gh = new GitHubClient(cfg);
+    const ref = await resolveBranch();
+    if (!ref) {
+      throw new Error("Не получилось определить ветку репо.");
+    }
+    await gh.dispatchWorkflow({
+      ref,
+      inputs: {
+        url: item.magnet,
+        filename: item.title || "",
+        subfolder: "",
+        quality: "auto",
+        ytdlp_format: "",
+      },
+    });
+    toast("Запущено — раннер качает торрент…", "success");
+    setTimeout(() => refreshRuns(true), 1500);
+  } catch (err) {
+    console.error(err);
+    toast(`Ошибка: ${err.message || err}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldLabel;
+  }
+}
+
+class GitHubSearchClient extends GitHubClient {
+  async getWorkflow(workflowFile) {
+    return this._fetch(
+      `/repos/${this.cfg.repo}/actions/workflows/${encodeURIComponent(
+        workflowFile
+      )}`
+    );
+  }
+
+  async listRunsForWorkflow(workflowFile, params = {}) {
+    const qs = new URLSearchParams({ per_page: "10", ...params }).toString();
+    return this._fetch(
+      `/repos/${this.cfg.repo}/actions/workflows/${encodeURIComponent(
+        workflowFile
+      )}/runs?${qs}`
+    );
+  }
+
+  async getRunJobs(runId) {
+    return this._fetch(
+      `/repos/${this.cfg.repo}/actions/runs/${runId}/jobs?per_page=20`
+    );
+  }
+
+  async listRunArtifacts(runId) {
+    return this._fetch(
+      `/repos/${this.cfg.repo}/actions/runs/${runId}/artifacts`
+    );
+  }
+
+  async fetchArtifactZip(artifact) {
+    // Returns a 302 redirect to a signed Azure URL. Browser fetch follows it.
+    const res = await fetch(
+      `https://api.github.com/repos/${this.cfg.repo}/actions/artifacts/${artifact.id}/zip`,
+      { headers: this.headers, redirect: "follow" }
+    );
+    if (!res.ok) {
+      throw new Error(
+        `Не удалось скачать артефакт: GitHub ${res.status}.`
+      );
+    }
+    return res.arrayBuffer();
+  }
+}
+
+function bindSearch() {
+  const btn = $("#search-btn");
+  const input = $("#search-query");
+  if (!btn || !input) return;
+
+  const runSearch = async () => {
+    setSearchError("");
+    const query = input.value.trim();
+    if (query.length < 2) {
+      setSearchError("Введи хотя бы 2 символа для поиска.");
+      return;
+    }
+    if (!isReady()) {
+      showSetupHint(true);
+      openSettings();
+      return;
+    }
+
+    $("#search-results").classList.add("hidden");
+    $("#search-results-list").innerHTML = "";
+
+    btn.disabled = true;
+    const lbl = $("#search-btn-label");
+    const oldLabel = lbl.textContent;
+    lbl.textContent = "Запускаем…";
+
+    let dispatchedAt = null;
+    try {
+      const gh = new GitHubSearchClient(cfg);
+
+      try {
+        await gh.getWorkflow(SEARCH_WORKFLOW);
+      } catch (err) {
+        const msg = String(err && err.message ? err.message : err);
+        if (/\b404\b/.test(msg)) {
+          throw new Error(
+            `В репо нет workflow ${SEARCH_WORKFLOW}. Смержь PR с поиском и попробуй снова.`
+          );
+        }
+        throw err;
+      }
+
+      const ref = await resolveBranch();
+      if (!ref) throw new Error("Не получилось определить ветку репо.");
+
+      dispatchedAt = Date.now();
+      // Dispatch search.yml with the query input.
+      await gh._fetch(
+        `/repos/${cfg.repo}/actions/workflows/${encodeURIComponent(
+          SEARCH_WORKFLOW
+        )}/dispatches`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ref, inputs: { query } }),
+        }
+      );
+      toast("Поиск запущен — слежу за этапами…", "info");
+
+      renderSearchStages([]);
+
+      // Locate the run we just dispatched.
+      const run = await waitForRun(gh, dispatchedAt);
+      if (!run) throw new Error("Не нашёл наш запуск среди недавних.");
+
+      // Poll job steps until the run is completed.
+      const jobs = await pollRunUntilDone(gh, run.id);
+      const job = jobs && jobs[0];
+      const conclusion = job ? job.conclusion : null;
+      if (conclusion && conclusion !== "success" && conclusion !== "neutral") {
+        throw new Error(
+          `Workflow завершился со статусом «${conclusion}». Посмотри лог в GitHub.`
+        );
+      }
+
+      const items = await downloadResults(gh, run.id);
+      renderSearchResults(items);
+      if (!items.length) {
+        toast("Ничего не нашлось.", "info");
+      } else {
+        toast(`Готово: ${items.length} результатов.`, "success");
+      }
+    } catch (err) {
+      console.error(err);
+      setSearchError(err.message || String(err));
+      toast(`Ошибка поиска: ${err.message || err}`, "error");
+    } finally {
+      btn.disabled = false;
+      lbl.textContent = oldLabel;
+    }
+  };
+
+  btn.addEventListener("click", runSearch);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") runSearch();
+  });
+}
+
+async function waitForRun(gh, dispatchedAt) {
+  const deadline = Date.now() + 60 * 1000;
+  while (Date.now() < deadline) {
+    try {
+      const data = await gh.listRunsForWorkflow(SEARCH_WORKFLOW, {
+        event: "workflow_dispatch",
+      });
+      const runs = data.workflow_runs || [];
+      // Pick the most recent run created at-or-after dispatch time.
+      const run = runs.find(
+        (r) => new Date(r.created_at).getTime() >= dispatchedAt - 5000
+      );
+      if (run) return run;
+    } catch (err) {
+      console.warn("waitForRun:", err);
+    }
+    await sleep(2000);
+  }
+  return null;
+}
+
+async function pollRunUntilDone(gh, runId) {
+  // Returns the final list of jobs once the run is completed.
+  const deadline = Date.now() + 8 * 60 * 1000; // 8 min cap.
+  let lastJobs = [];
+  while (Date.now() < deadline) {
+    let data;
+    try {
+      data = await gh.getRunJobs(runId);
+    } catch (err) {
+      console.warn("getRunJobs:", err);
+      await sleep(3000);
+      continue;
+    }
+    lastJobs = data.jobs || [];
+    const job = lastJobs[0];
+    if (job) renderSearchStages(job.steps || []);
+    const allDone =
+      lastJobs.length > 0 &&
+      lastJobs.every((j) => j.status === "completed");
+    if (allDone) return lastJobs;
+    await sleep(3000);
+  }
+  return lastJobs;
+}
+
+async function downloadResults(gh, runId) {
+  // Wait for artifact to appear (sometimes lags a bit after run completion).
+  const deadline = Date.now() + 60 * 1000;
+  let artifact = null;
+  while (Date.now() < deadline) {
+    const data = await gh.listRunArtifacts(runId);
+    artifact = (data.artifacts || []).find(
+      (a) => a.name === SEARCH_RESULTS_ARTIFACT
+    );
+    if (artifact) break;
+    await sleep(2000);
+  }
+  if (!artifact) {
+    throw new Error(
+      "Артефакт с результатами не появился. Открой запуск в GitHub и посмотри лог."
+    );
+  }
+
+  let buf;
+  try {
+    buf = await gh.fetchArtifactZip(artifact);
+  } catch (err) {
+    throw new Error(
+      `Браузер не смог скачать артефакт (${
+        err.message || err
+      }). Открой запуск в GitHub и скачай results.json вручную.`
+    );
+  }
+
+  const JSZip = await loadJSZip();
+  const zip = await JSZip.loadAsync(buf);
+  const entry = zip.file("results.json");
+  if (!entry) {
+    throw new Error("В артефакте нет файла results.json.");
+  }
+  const text = await entry.async("string");
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`results.json не парсится: ${err.message || err}`);
+  }
+  return Array.isArray(parsed) ? parsed : parsed.items || [];
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 // ---------- Paste-from-clipboard helper ----------
 function bindPaste() {
   const btn = $("#paste-btn");
@@ -806,6 +1382,8 @@ document.addEventListener("DOMContentLoaded", () => {
   bindInstall();
   bindPaste();
   bindDriveUpload();
+  bindTrackersUpload();
+  bindSearch();
   bindUrlHint();
   bindQualityToggle();
   $("#refresh-btn").addEventListener("click", () => refreshRuns(true));
