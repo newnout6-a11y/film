@@ -67,14 +67,33 @@ function timeAgo(isoString) {
   const then = new Date(isoString).getTime();
   const diff = Math.max(0, Date.now() - then);
   const s = Math.floor(diff / 1000);
-  if (s < 60) return `${s}s ago`;
+  if (s < 60) return `${s} с назад`;
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
+  if (m < 60) return `${m} мин назад`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
+  if (h < 24) return `${h} ч назад`;
   const d = Math.floor(h / 24);
-  return `${d}d ago`;
+  return `${d} дн назад`;
 }
+
+// ---------- status localisation ----------
+const STATUS_LABELS = {
+  queued: "в очереди",
+  in_progress: "идёт",
+  completed: "готово",
+  pending: "ждёт",
+  waiting: "ожидает",
+  requested: "запрошен",
+  success: "успех",
+  failure: "ошибка",
+  cancelled: "отменён",
+  skipped: "пропущен",
+  timed_out: "таймаут",
+  action_required: "нужно действие",
+  neutral: "нейтрально",
+  stale: "устарел",
+  startup_failure: "ошибка старта",
+};
 
 // ---------- GitHub API ----------
 class GitHubClient {
@@ -181,7 +200,7 @@ function bindSettings() {
     cfg = loadCfg();
     ensureRepoLink();
     showSetupHint(true);
-    toast("Settings cleared.", "success");
+    toast("Настройки очищены.", "success");
     closeSettings();
   });
   $("#settings-save").addEventListener("click", () => {
@@ -192,12 +211,12 @@ function bindSettings() {
       token: $("#cfg-token").value.trim(),
     };
     if (!/^[\w.-]+\/[\w.-]+$/.test(next.repo)) {
-      toast("Repo must be in the form owner/repo.", "error");
+      toast("Репозиторий должен быть в формате owner/repo.", "error");
       return;
     }
     if (next.token && !/^(github_pat_|gh[opsu]_)[A-Za-z0-9_]+$/.test(next.token)) {
       toast(
-        "Warning: token does not look like a GitHub PAT. Saving anyway.",
+        "Внимание: токен не похож на GitHub PAT. Сохраняю всё равно.",
         "error",
         2500
       );
@@ -206,7 +225,7 @@ function bindSettings() {
     saveCfg(cfg);
     ensureRepoLink();
     showSetupHint(!isReady());
-    toast("Saved.", "success");
+    toast("Сохранено.", "success");
     closeSettings();
     refreshRuns(true);
   });
@@ -234,7 +253,7 @@ function bindForm() {
     };
 
     if (!/^https?:\/\//i.test(inputs.url)) {
-      errEl.textContent = "URL must start with http:// or https://";
+      errEl.textContent = "Ссылка должна начинаться с http:// или https://";
       return;
     }
 
@@ -242,19 +261,19 @@ function bindForm() {
     btn.disabled = true;
     const lbl = $("#beam-btn-label");
     const oldLabel = lbl.textContent;
-    lbl.textContent = "Beaming…";
+    lbl.textContent = "Отправляем…";
 
     try {
       const gh = new GitHubClient(cfg);
       await gh.dispatchWorkflow({ ref: cfg.branch, inputs });
-      toast("Beam started — runner is downloading…", "success");
+      toast("Запущено — раннер качает…", "success");
       $("#url").value = "";
       // GitHub sometimes takes a beat to register the run.
       setTimeout(() => refreshRuns(true), 1500);
     } catch (err) {
       console.error(err);
       errEl.textContent = err.message || String(err);
-      toast(`Failed: ${err.message || err}`, "error");
+      toast(`Ошибка: ${err.message || err}`, "error");
     } finally {
       btn.disabled = false;
       lbl.textContent = oldLabel;
@@ -270,7 +289,8 @@ function statusKey(run) {
 
 function statusLabel(run) {
   const s = statusKey(run);
-  return s ? s.replace(/_/g, " ") : "unknown";
+  if (!s) return "неизвестно";
+  return STATUS_LABELS[s] || s.replace(/_/g, " ");
 }
 
 function renderRuns(runs) {
@@ -279,7 +299,7 @@ function renderRuns(runs) {
   if (!runs || runs.length === 0) {
     const empty = document.createElement("div");
     empty.className = "px-4 py-6 text-center text-sm text-slate-500";
-    empty.textContent = "No runs yet.";
+    empty.textContent = "Пока ничего не было.";
     wrap.appendChild(empty);
     return;
   }
@@ -298,7 +318,7 @@ function renderRuns(runs) {
     label.className = "min-w-0";
     const title = document.createElement("div");
     title.className = "truncate text-sm font-medium text-slate-100";
-    title.textContent = run.display_title || run.name || `Run #${run.run_number}`;
+    title.textContent = run.display_title || run.name || `Запуск #${run.run_number}`;
     const sub = document.createElement("div");
     sub.className = "truncate text-xs text-slate-500";
     sub.textContent = `#${run.run_number} · ${run.event} · ${
@@ -335,7 +355,7 @@ async function refreshRuns(immediate = false) {
   } catch (err) {
     console.warn("refreshRuns failed:", err);
     if (immediate) {
-      toast(`Could not load runs: ${err.message || err}`, "error");
+      toast(`Не удалось загрузить запуски: ${err.message || err}`, "error");
     }
   }
 }
@@ -358,12 +378,12 @@ function bindInstall() {
   window.addEventListener("appinstalled", () => {
     deferredInstall = null;
     btn.hidden = true;
-    toast("Installed. Look for it on your home screen.", "success");
+    toast("Установлено. Ищи на главном экране.", "success");
   });
   btn.addEventListener("click", async () => {
     if (!deferredInstall) {
       toast(
-        "Use your browser menu → Add to Home Screen.",
+        "Открой меню браузера → «Добавить на главный экран».",
         "info",
         5000
       );
@@ -387,14 +407,14 @@ function bindPaste() {
   btn.addEventListener("click", async () => {
     try {
       if (!navigator.clipboard || !navigator.clipboard.readText) {
-        throw new Error("Clipboard API unavailable.");
+        throw new Error("Clipboard API недоступен.");
       }
       const text = await navigator.clipboard.readText();
       if (!text) return;
       $("#url").value = text.trim();
       $("#url").focus();
     } catch (err) {
-      toast(`Could not read clipboard: ${err.message || err}`, "error");
+      toast(`Не удалось вставить из буфера: ${err.message || err}`, "error");
     }
   });
 }
