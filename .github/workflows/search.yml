@@ -41,6 +41,13 @@ jobs:
           QUERY: ${{ inputs.query }}
         run: python scripts/search/apibay.py
 
+      - name: Search Rutor
+        if: always()
+        continue-on-error: true
+        env:
+          QUERY: ${{ inputs.query }}
+        run: python scripts/search/rutor.py
+
       - name: Search RuTracker
         if: always()
         continue-on-error: true

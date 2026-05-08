@@ -45,7 +45,17 @@ def login(session: requests.Session, username: str, password: str) -> bool:
     if "uid" in cookies and "pass" in cookies:
         log("kinozal: login OK")
         return True
-    log("kinozal: login failed — check KINOZAL_USERNAME / KINOZAL_PASSWORD")
+    body = r.text or ""
+    lowered = body.lower()
+    hint = ""
+    if "captcha" in lowered or "капча" in lowered:
+        hint = " (CAPTCHA — paste KINOZAL_COOKIES instead)"
+    elif "неверн" in lowered or "wrong" in lowered or "incorrect" in lowered:
+        hint = " (server says credentials are wrong)"
+    log(
+        f"kinozal: login failed — HTTP {r.status_code}, body {len(body)}B"
+        f"{hint}; check KINOZAL_USERNAME / KINOZAL_PASSWORD or use KINOZAL_COOKIES"
+    )
     return False
 
 

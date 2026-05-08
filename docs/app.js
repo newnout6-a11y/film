@@ -2218,6 +2218,11 @@ function loadJSZip() {
 // can render real-time progress just by polling /jobs.
 const SEARCH_STAGES = [
   { name: "RuTracker", match: /rutracker/i },
+  // Match the workflow's "Search Rutor" step name. Keep this entry above
+  // the "RuTracker" check would not work because the regex anchors fall
+  // through, but Rutor's regex is more specific (\brutor\b) so order
+  // doesn't matter. We keep it next to RuTracker for diagnostic clarity.
+  { name: "Rutor", match: /\brutor\b/i },
   { name: "Pirate Bay", match: /pirate\s*bay|apibay/i },
   { name: "Kinozal", match: /kinozal/i },
   { name: "NNM-Club", match: /nnm/i },

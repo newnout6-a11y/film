@@ -52,7 +52,17 @@ def login(session: requests.Session, username: str, password: str) -> bool:
     if "phpbb2mysql_data" in cookies or "phpbb2mysql_sid" in cookies:
         log("nnm: login OK")
         return True
-    log("nnm: login failed — check NNM_USERNAME / NNM_PASSWORD")
+    body = r.text or ""
+    lowered = body.lower()
+    hint = ""
+    if "captcha" in lowered or "капча" in lowered:
+        hint = " (CAPTCHA — paste NNM_COOKIES instead)"
+    elif "неверн" in lowered or "wrong" in lowered or "incorrect" in lowered:
+        hint = " (server says credentials are wrong)"
+    log(
+        f"nnm: login failed — HTTP {r.status_code}, body {len(body)}B"
+        f"{hint}; check NNM_USERNAME / NNM_PASSWORD or use NNM_COOKIES"
+    )
     return False
 
 

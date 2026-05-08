@@ -54,8 +54,27 @@ def login(session: requests.Session, username: str, password: str) -> bool:
     if any(k.startswith("bb_session") for k in cookies) or "bb_data" in cookies:
         log("rutracker: login OK")
         return True
+    # Surface what the server actually returned so the user can troubleshoot
+    # without re-running the workflow with a debugger. RuTracker writes the
+    # rejection reason in cp1251 inside the login form's <font color="red">
+    # block; we look for the most common phrases and dump a body snippet
+    # otherwise.
+    body = ""
+    try:
+        body = r.content.decode("windows-1251", errors="replace")
+    except Exception:  # noqa: BLE001
+        body = r.text or ""
+    hint = ""
+    lowered = body.lower()
+    if "капча" in lowered or "captcha" in lowered:
+        hint = " (CAPTCHA challenge — paste a Netscape RUTRACKER_COOKIES blob instead)"
+    elif "не верный" in lowered or "неверный" in lowered or "incorrect" in lowered:
+        hint = " (server says credentials are wrong)"
+    elif "заблокирован" in lowered:
+        hint = " (account looks blocked on this IP)"
     log(
-        "rutracker: login failed — check RUTRACKER_USERNAME / RUTRACKER_PASSWORD"
+        f"rutracker: login failed — HTTP {r.status_code}, body {len(body)}B"
+        f"{hint}; check RUTRACKER_USERNAME / RUTRACKER_PASSWORD or use RUTRACKER_COOKIES"
     )
     return False
 
