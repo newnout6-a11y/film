@@ -20,19 +20,19 @@
     <meta name="application-name" content="Film Beamer" />
     <meta name="format-detection" content="telephone=no" />
 
-    <link rel="manifest" href="./manifest.webmanifest?v=28" />
+    <link rel="manifest" href="./manifest.webmanifest?v=29" />
     <link rel="icon" type="image/svg+xml" href="./icon.svg" />
     <link rel="apple-touch-icon" href="./icon.svg" />
     <!-- Pre-compiled Tailwind bundle (23 KB minified) replaces the 350 KB
          Tailwind Play CDN script. The config lives at /tailwind.config.js
          and the build is in scripts/build_tailwind.sh. -->
-    <link rel="preload" href="./tailwind.css?v=28" as="style" />
-    <link rel="preload" href="./style.css?v=28" as="style" />
-    <link rel="preload" href="./app.js?v=28" as="script" />
+    <link rel="preload" href="./tailwind.css?v=29" as="style" />
+    <link rel="preload" href="./style.css?v=29" as="style" />
+    <link rel="preload" href="./app.js?v=29" as="script" />
     <link rel="dns-prefetch" href="https://api.github.com" />
     <link rel="preconnect" href="https://api.github.com" crossorigin />
-    <link rel="stylesheet" href="./tailwind.css?v=28" />
-    <link rel="stylesheet" href="./style.css?v=28" />
+    <link rel="stylesheet" href="./tailwind.css?v=29" />
+    <link rel="stylesheet" href="./style.css?v=29" />
   </head>
   <body class="min-h-screen bg-ink-950 text-slate-100 antialiased font-sans selection:bg-accent-500/30">
     <div class="bg-grid pointer-events-none fixed inset-0 -z-10"></div>
@@ -618,7 +618,7 @@
             </p>
 
             <label class="block">
-              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Папка Drive (URL или ID)</span>
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Папка Drive (URL или ID, опционально)</span>
               <input
                 id="drive-folder"
                 type="text"
@@ -626,66 +626,113 @@
                 class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
               />
               <span class="mt-1 block text-xs text-slate-500">
-                Пишется в секрет <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">GDRIVE_FOLDER_ID</code>.
+                Пишется в секрет <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">GDRIVE_FOLDER_ID</code>. В OAuth-режиме можно оставить пустым — файлы лягут в корень твоего «Моего диска».
               </span>
             </label>
 
-            <div class="rounded-lg border border-amber-300/30 bg-amber-500/10 p-3 text-xs text-amber-100">
-              <p class="font-semibold">Папка должна быть в Shared Drive (Общий диск).</p>
+            <div class="rounded-lg border border-emerald-300/30 bg-emerald-500/10 p-3 text-xs text-emerald-100">
+              <p class="font-semibold">OAuth refresh token — рекомендуется для личных @gmail.com.</p>
               <p class="mt-1">
-                У сервис-аккаунтов нет своего места в Drive. Загрузка в обычную папку «Мой диск» падает с
-                <code class="rounded bg-ink-900/40 px-1 text-[11px]">storageQuotaExceeded</code> — даже если папку с ним поделили.
+                Воркфлоу будет писать в Drive от твоего имени и расходовать твою личную квоту (15 ГБ бесплатно). Service Account на личном Google не работает — он требует Shared Drive, а Shared Drive есть только в Workspace.
               </p>
-              <ol class="mt-2 list-decimal space-y-0.5 pl-5">
-                <li>Создай <a class="underline decoration-dotted underline-offset-2 hover:text-amber-50" href="https://drive.google.com/drive/shared-drives" target="_blank" rel="noreferrer noopener">Shared Drive</a>.</li>
-                <li>Добавь сервис-аккаунт как <em>Content manager</em>.</li>
-                <li>Создай (или перенеси) папку внутрь Shared Drive и сюда вставь её ID.</li>
+              <p class="mt-2">Как получить токен (один раз):</p>
+              <ol class="mt-1 list-decimal space-y-0.5 pl-5">
+                <li>На любом ПК с браузером поставь <a class="underline decoration-dotted underline-offset-2 hover:text-emerald-50" href="https://rclone.org/install/" target="_blank" rel="noreferrer noopener">rclone</a> (Linux/macOS: <code class="rounded bg-ink-900/40 px-1 text-[11px]">curl https://rclone.org/install.sh | sudo bash</code>; Windows: <code class="rounded bg-ink-900/40 px-1 text-[11px]">winget install Rclone.Rclone</code>; Android: пакет <code class="rounded bg-ink-900/40 px-1 text-[11px]">rclone</code> в Termux).</li>
+                <li>В терминале выполни <code class="rounded bg-ink-900/40 px-1 text-[11px]">rclone authorize "drive"</code>. Откроется браузер, авторизуйся под нужным Google-аккаунтом и подтверди доступ.</li>
+                <li>rclone напечатает строку с JSON вида <code class="rounded bg-ink-900/40 px-1 text-[11px]">{"access_token":"…","refresh_token":"…",…}</code> — скопируй её целиком (обе фигурные скобки) и вставь ниже.</li>
               </ol>
             </div>
 
             <label class="block">
-              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Service account JSON</span>
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">OAuth refresh token (JSON от rclone)</span>
               <textarea
-                id="drive-json"
-                rows="5"
-                placeholder='{"type":"service_account","project_id":"…", … }'
+                id="drive-oauth-token"
+                rows="3"
+                placeholder='{"access_token":"…","token_type":"Bearer","refresh_token":"…","expiry":"…"}'
                 class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 font-mono text-xs focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
               ></textarea>
               <span class="mt-1 block text-xs text-slate-500">
-                Вставь JSON целиком, либо
-                <button type="button" id="drive-json-pick" class="underline decoration-dotted underline-offset-2 hover:text-slate-300">загрузи файл</button>.
-                Пишется в секрет <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">GDRIVE_SERVICE_ACCOUNT</code>.
+                Пишется в секрет <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">GDRIVE_OAUTH_TOKEN</code>. Шифруется в браузере sealed box и кладётся прямо в GitHub Secrets — без захода на github.com.
               </span>
-              <input id="drive-json-file" type="file" accept="application/json,.json" class="hidden" />
             </label>
 
-            <div id="drive-sa-email" class="hidden rounded-lg border border-amber-300/30 bg-amber-500/10 p-3 text-xs text-amber-100">
-              <p class="font-semibold">Не забудь:</p>
-              <p class="mt-1">Расшарь папку Drive на этот email с правом Editor:</p>
-              <code id="drive-sa-email-value" class="mt-1 block break-all font-mono text-[11px]"></code>
-            </div>
-
             <button
-              id="drive-upload"
+              id="drive-oauth-upload"
               type="button"
               class="w-full whitespace-nowrap rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60"
-              data-default-label="Загрузить в GitHub Secrets"
+              data-default-label="Сохранить OAuth-токен в GitHub Secrets"
             >
-              Загрузить в GitHub Secrets
+              Сохранить OAuth-токен в GitHub Secrets
             </button>
 
-            <div class="mt-2 flex items-center gap-2">
-              <button
-                id="drive-test"
-                type="button"
-                class="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-white/10"
-              >
-                Проверить доступ
-              </button>
-              <span id="drive-test-status" class="text-xs text-slate-500"></span>
-            </div>
+            <p id="drive-oauth-status" class="hidden text-xs"></p>
 
-            <p id="drive-status" class="hidden text-xs"></p>
+            <details class="mt-2 rounded-lg border border-white/10 bg-ink-900/40 p-3">
+              <summary class="cursor-pointer select-none text-xs font-medium text-slate-300">
+                Service Account (только для Google Workspace + Shared Drive)
+                <span class="ml-1 block text-[11px] font-normal text-slate-500">
+                  На личном @gmail.com работать не будет — у SA нет своей квоты, а Shared Drive создаётся только в Workspace. Используй OAuth выше.
+                </span>
+              </summary>
+              <div class="mt-3 space-y-3">
+                <div class="rounded-lg border border-amber-300/30 bg-amber-500/10 p-3 text-[11px] text-amber-100">
+                  <p class="font-semibold">Папка должна быть в Shared Drive (Общий диск).</p>
+                  <p class="mt-1">
+                    Загрузка в «Мой диск» падает с
+                    <code class="rounded bg-ink-900/40 px-1 text-[10px]">storageQuotaExceeded</code> даже если папку расшарили.
+                  </p>
+                  <ol class="mt-2 list-decimal space-y-0.5 pl-5">
+                    <li>Создай <a class="underline decoration-dotted underline-offset-2 hover:text-amber-50" href="https://drive.google.com/drive/shared-drives" target="_blank" rel="noreferrer noopener">Shared Drive</a> (нужен Workspace).</li>
+                    <li>Добавь сервис-аккаунт как <em>Content manager</em>.</li>
+                    <li>Создай (или перенеси) папку внутрь и сюда вставь её ID.</li>
+                  </ol>
+                </div>
+
+                <label class="block">
+                  <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Service account JSON</span>
+                  <textarea
+                    id="drive-json"
+                    rows="5"
+                    placeholder='{"type":"service_account","project_id":"…", … }'
+                    class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 font-mono text-xs focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+                  ></textarea>
+                  <span class="mt-1 block text-xs text-slate-500">
+                    Вставь JSON целиком, либо
+                    <button type="button" id="drive-json-pick" class="underline decoration-dotted underline-offset-2 hover:text-slate-300">загрузи файл</button>.
+                    Пишется в секрет <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">GDRIVE_SERVICE_ACCOUNT</code>.
+                  </span>
+                  <input id="drive-json-file" type="file" accept="application/json,.json" class="hidden" />
+                </label>
+
+                <div id="drive-sa-email" class="hidden rounded-lg border border-amber-300/30 bg-amber-500/10 p-3 text-xs text-amber-100">
+                  <p class="font-semibold">Не забудь:</p>
+                  <p class="mt-1">Расшарь папку Drive на этот email с правом Editor:</p>
+                  <code id="drive-sa-email-value" class="mt-1 block break-all font-mono text-[11px]"></code>
+                </div>
+
+                <button
+                  id="drive-upload"
+                  type="button"
+                  class="w-full whitespace-nowrap rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                  data-default-label="Сохранить SA в GitHub Secrets"
+                >
+                  Сохранить SA в GitHub Secrets
+                </button>
+
+                <div class="mt-2 flex items-center gap-2">
+                  <button
+                    id="drive-test"
+                    type="button"
+                    class="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-white/10"
+                  >
+                    Проверить доступ
+                  </button>
+                  <span id="drive-test-status" class="text-xs text-slate-500"></span>
+                </div>
+
+                <p id="drive-status" class="hidden text-xs"></p>
+              </div>
+            </details>
           </div>
         </details>
 
@@ -1579,7 +1626,7 @@
       style="bottom: max(env(safe-area-inset-bottom), 1.5rem);"
     ></div>
 
-    <script src="./app.js?v=27"></script>
+    <script src="./app.js?v=29"></script>
     <script>
       // Service worker registration is handled inside app.js (registerServiceWorker)
       // so the page can detect updates and show the banner. We keep this stub
