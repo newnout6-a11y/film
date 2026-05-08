@@ -24,7 +24,7 @@
 //     diagnostics in the page can show which SW is running.
 // =============================================================================
 
-const CACHE_VERSION = "film-beamer-v25-search-stack";
+const CACHE_VERSION = "film-beamer-v26-search-killers";
 const CACHE_PREFIX = "film-beamer-";
 
 // Things that change every release — must come from network when possible.
