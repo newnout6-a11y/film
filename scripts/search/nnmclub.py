@@ -13,6 +13,11 @@ from bs4 import BeautifulSoup
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import (  # noqa: E402
     PUBLIC_TRACKERS,
+    STATUS_BLOCKED,
+    STATUS_FAILED,
+    STATUS_NO_RESULTS,
+    STATUS_OK,
+    STATUS_SKIPPED,
     cookies_from_env,
     env,
     log,
@@ -21,6 +26,7 @@ from common import (  # noqa: E402
     to_magnet,
     torrent_info_hash,
     write_results,
+    write_status,
 )
 
 TRACKER_LABEL = "NNM-Club"
@@ -187,6 +193,12 @@ def main() -> int:
     if not query:
         log("nnm: empty query, skipping")
         write_results(TRACKER_SLUG, [])
+        write_status(
+            TRACKER_SLUG,
+            label=TRACKER_LABEL,
+            status=STATUS_NO_RESULTS,
+            reason="пустой запрос",
+        )
         return 0
     if not (user and pwd) and not cookies:
         log(
@@ -194,6 +206,12 @@ def main() -> int:
             "or paste a Netscape NNM_COOKIES blob)"
         )
         write_results(TRACKER_SLUG, [])
+        write_status(
+            TRACKER_SLUG,
+            label=TRACKER_LABEL,
+            status=STATUS_SKIPPED,
+            reason="нет логина/cookies в Настройках",
+        )
         return 0
 
     session = requests.Session()
@@ -213,6 +231,12 @@ def main() -> int:
     if not authed:
         log("nnm: not authenticated, skipping")
         write_results(TRACKER_SLUG, [])
+        write_status(
+            TRACKER_SLUG,
+            label=TRACKER_LABEL,
+            status=STATUS_BLOCKED,
+            reason="логин не прошёл",
+        )
         return 0
 
     log(f"nnm: searching {query!r}")
@@ -222,6 +246,12 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         log(f"nnm: search error: {e}")
         write_results(TRACKER_SLUG, [])
+        write_status(
+            TRACKER_SLUG,
+            label=TRACKER_LABEL,
+            status=STATUS_FAILED,
+            reason=f"поиск упал: {type(e).__name__}",
+        )
         return 0
 
     rows = parse_search(r.text)
@@ -250,6 +280,12 @@ def main() -> int:
 
     log(f"nnm: {len(items)} usable result(s)")
     write_results(TRACKER_SLUG, items)
+    write_status(
+        TRACKER_SLUG,
+        label=TRACKER_LABEL,
+        status=STATUS_OK if items else STATUS_NO_RESULTS,
+        count=len(items),
+    )
     return 0
 
 

@@ -16,9 +16,19 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import RESULTS_DIR, env, log  # noqa: E402
+from common import RESULTS_DIR, STATUS_DIR, env, log  # noqa: E402
 
 TOP_N = 5
+
+# Order/labels mirror what the UI shows so a missing status falls back to
+# "skipped" rather than disappearing.
+STAGE_ORDER = (
+    ("rutracker", "RuTracker"),
+    ("rutor", "Rutor"),
+    ("apibay", "Pirate Bay"),
+    ("kinozal", "Kinozal"),
+    ("nnm", "NNM-Club"),
+)
 QUALITY_BOOST = (
     ("2160p", 6),
     ("4k", 6),
@@ -51,6 +61,55 @@ def load_all() -> list[dict]:
         if isinstance(data, list):
             items.extend(data)
     return items
+
+
+def load_stages(per_tracker_counts: dict[str, int]) -> list[dict]:
+    """Build the stage list the UI consumes.
+
+    Reads ``results/_status/<slug>.json`` files; if a tracker did not write a
+    status (script crashed before the call) we mark it ``failed`` so the UI
+    surfaces the real outcome instead of the workflow's "all green".
+    """
+    raw: dict[str, dict] = {}
+    if os.path.isdir(STATUS_DIR):
+        for path in sorted(glob.glob(os.path.join(STATUS_DIR, "*.json"))):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    payload = json.load(f)
+            except Exception as e:  # noqa: BLE001
+                log(f"aggregate: skipping status file {path} ({e})")
+                continue
+            slug = payload.get("slug") or os.path.splitext(os.path.basename(path))[0]
+            raw[slug] = payload
+
+    stages: list[dict] = []
+    for slug, label in STAGE_ORDER:
+        info = raw.get(slug)
+        if info is None:
+            stages.append(
+                {
+                    "slug": slug,
+                    "label": label,
+                    "status": "failed",
+                    "count": per_tracker_counts.get(slug, 0),
+                    "reason": "скрипт упал до записи статуса",
+                }
+            )
+            continue
+        # Trust the script's count first, fall back to dedup-aware count.
+        count = info.get("count")
+        if not isinstance(count, int) or count < 0:
+            count = per_tracker_counts.get(slug, 0)
+        stages.append(
+            {
+                "slug": slug,
+                "label": info.get("label") or label,
+                "status": info.get("status") or "failed",
+                "count": count,
+                "reason": info.get("reason") or "",
+            }
+        )
+    return stages
 
 
 def relevance_score(query: str, title: str) -> int:
@@ -115,13 +174,38 @@ def main() -> int:
 
     deduped.sort(key=score, reverse=True)
     top = deduped[:TOP_N]
+
+    # Per-tracker dedup-aware counts. We use these as a fallback when the
+    # tracker script crashed before writing its status blob.
+    per_tracker_counts: dict[str, int] = {}
+    for it in deduped:
+        tr = (it.get("tracker") or "").strip().lower()
+        slug = {
+            "rutracker": "rutracker",
+            "rutor": "rutor",
+            "pirate bay": "apibay",
+            "apibay": "apibay",
+            "kinozal": "kinozal",
+            "nnm-club": "nnm",
+            "nnm": "nnm",
+        }.get(tr, tr)
+        per_tracker_counts[slug] = per_tracker_counts.get(slug, 0) + 1
+
+    stages = load_stages(per_tracker_counts)
+
     log(f"aggregate: writing top {len(top)} into results.json")
     # Atomic write: a partial results.json from a crashed run was previously
     # picked up by the UI and rendered as «nothing found». Write+rename keeps
     # the previous file in place if json.dump throws halfway through.
+    payload = {
+        "schema": 2,
+        "query": query,
+        "items": top,
+        "stages": stages,
+    }
     tmp = "results.json.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(top, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
     os.replace(tmp, "results.json")
     return 0
 

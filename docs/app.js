@@ -2218,19 +2218,22 @@ function loadJSZip() {
 }
 
 // Stage names mirror the step names in .github/workflows/search.yml so the UI
-// can render real-time progress just by polling /jobs.
+// can render real-time progress just by polling /jobs. Each entry's `slug`
+// also matches the slug each tracker writes into results.json so we can swap
+// the workflow-step view for the real per-tracker status once the artifact
+// is downloaded.
 const SEARCH_STAGES = [
-  { name: "RuTracker", match: /rutracker/i },
+  { slug: "rutracker", name: "RuTracker", match: /rutracker/i },
   // Match the workflow's "Search Rutor" step name. Keep this entry above
   // the "RuTracker" check would not work because the regex anchors fall
   // through, but Rutor's regex is more specific (\brutor\b) so order
   // doesn't matter. We keep it next to RuTracker for diagnostic clarity.
-  { name: "Rutor", match: /\brutor\b/i },
-  { name: "Pirate Bay", match: /pirate\s*bay|apibay/i },
-  { name: "Kinozal", match: /kinozal/i },
-  { name: "NNM-Club", match: /nnm/i },
-  { name: "Свод результатов", match: /aggregate|свод/i },
-  { name: "Загрузка артефакта", match: /artifact|upload/i },
+  { slug: "rutor", name: "Rutor", match: /\brutor\b/i },
+  { slug: "apibay", name: "Pirate Bay", match: /pirate\s*bay|apibay/i },
+  { slug: "kinozal", name: "Kinozal", match: /kinozal/i },
+  { slug: "nnm", name: "NNM-Club", match: /nnm/i },
+  { slug: "aggregate", name: "Свод результатов", match: /aggregate|свод/i },
+  { slug: "upload", name: "Загрузка артефакта", match: /artifact|upload/i },
 ];
 
 const STAGE_ICONS = {
@@ -2241,6 +2244,10 @@ const STAGE_ICONS = {
   skipped: "·",
   cancelled: "·",
   neutral: "●",
+  empty: "·",
+  blocked: "×",
+  ok: "●",
+  failed: "×",
 };
 
 function setSearchError(text) {
@@ -2248,54 +2255,100 @@ function setSearchError(text) {
   if (el) el.textContent = text || "";
 }
 
-function renderSearchStages(steps) {
+// Map a tracker-status slug from results.json onto the visual key the row
+// renderer understands. Trackers report their actual outcome (ok / empty /
+// blocked / skipped / failed); the workflow only exposes step.conclusion
+// which is `success` even when the script gave up — that's exactly the bug
+// we are fixing.
+function _statusToKey(status) {
+  switch (status) {
+    case "ok":
+      return "success";
+    case "empty":
+      return "empty";
+    case "skipped":
+      return "skipped";
+    case "blocked":
+      return "blocked";
+    case "failed":
+      return "failure";
+    default:
+      return "pending";
+  }
+}
+
+function _stageVisualClass(key) {
+  if (key === "in_progress") return "text-accent-300 animate-pulse";
+  if (key === "failure" || key === "blocked" || key === "cancelled" || key === "timed_out")
+    return "text-rose-300";
+  if (key === "success" || key === "neutral" || key === "ok")
+    return "text-emerald-300";
+  if (key === "empty") return "text-amber-300";
+  if (key === "skipped") return "text-slate-500";
+  return "text-slate-500";
+}
+
+function _stageVisualLabel(key, count, reason) {
+  if (key === "in_progress") return "идёт";
+  if (key === "success" || key === "ok")
+    return count ? `готово · ${count}` : "готово";
+  if (key === "empty") return "ничего не нашлось";
+  if (key === "blocked") return reason || "трекер заблокировал";
+  if (key === "failure" || key === "failed")
+    return reason || "ошибка";
+  if (key === "skipped")
+    return reason || "пропущен (нет логина)";
+  if (key === "cancelled") return "отменён";
+  return "ждёт";
+}
+
+function renderSearchStages(steps, opts) {
+  // `opts.stages` is the per-tracker status payload from results.json once
+  // we have it. While the workflow is still running we fall back to the
+  // step list (steps[]) — that's the only signal available mid-run.
   const wrap = $("#search-progress");
   const list = $("#search-stages");
   if (!wrap || !list) return;
   wrap.classList.remove("hidden");
   list.innerHTML = "";
+  const stagesByslug = new Map();
+  if (opts && Array.isArray(opts.stages)) {
+    for (const s of opts.stages) {
+      if (s && s.slug) stagesByslug.set(s.slug, s);
+    }
+  }
   for (const stage of SEARCH_STAGES) {
-    const step = steps.find((s) => stage.match.test(s.name || ""));
     let key = "pending";
-    if (step) {
-      if (step.status === "completed") {
-        key = step.conclusion || "success";
-      } else if (step.status === "in_progress" || step.status === "queued") {
-        key = "in_progress";
+    let count = 0;
+    let reason = "";
+    const fromResults = stagesByslug.get(stage.slug);
+    if (fromResults) {
+      key = _statusToKey(fromResults.status);
+      count = Number(fromResults.count) || 0;
+      reason = fromResults.reason || "";
+    } else {
+      const step = steps.find((s) => stage.match.test(s.name || ""));
+      if (step) {
+        if (step.status === "completed") {
+          key = step.conclusion || "success";
+        } else if (step.status === "in_progress" || step.status === "queued") {
+          key = "in_progress";
+        }
       }
     }
     const li = document.createElement("li");
     li.className = "flex items-center gap-2 text-sm";
     const icon = document.createElement("span");
-    icon.className =
-      key === "in_progress"
-        ? "text-accent-300 animate-pulse"
-        : key === "failure" || key === "cancelled" || key === "timed_out"
-        ? "text-rose-300"
-        : key === "success" || key === "neutral"
-        ? "text-emerald-300"
-        : key === "skipped"
-        ? "text-slate-500"
-        : "text-slate-500";
+    icon.className = _stageVisualClass(key);
     icon.textContent = STAGE_ICONS[key] || "○";
     const label = document.createElement("span");
     label.className =
       key === "pending" ? "text-slate-400" : "text-slate-100";
     label.textContent = stage.name;
     const sub = document.createElement("span");
-    sub.className = "ml-auto text-xs text-slate-500";
-    sub.textContent =
-      key === "in_progress"
-        ? "идёт"
-        : key === "success"
-        ? "готово"
-        : key === "failure"
-        ? "ошибка"
-        : key === "skipped"
-        ? "пропущен (нет логина)"
-        : key === "cancelled"
-        ? "отменён"
-        : "ждёт";
+    sub.className = "ml-auto truncate text-xs text-slate-500";
+    sub.textContent = _stageVisualLabel(key, count, reason);
+    if (reason) li.title = reason;
     li.appendChild(icon);
     li.appendChild(label);
     li.appendChild(sub);
@@ -2542,7 +2595,10 @@ function bindSearch() {
         );
       }
 
-      const items = await downloadResults(gh, run.id);
+      const { items, stages } = await downloadResults(gh, run.id);
+      // Re-render the stage list with the per-tracker truth (`stages`)
+      // instead of leaving the workflow's "all green" status visible.
+      renderSearchStages(job ? job.steps || [] : [], { stages });
       renderSearchResults(items);
       if (!items.length) {
         toast("Ничего не нашлось.", "info");
@@ -2669,7 +2725,14 @@ async function downloadResults(gh, runId) {
   } catch (err) {
     throw new Error(`results.json не парсится: ${err.message || err}`);
   }
-  return Array.isArray(parsed) ? parsed : parsed.items || [];
+  if (Array.isArray(parsed)) {
+    // Old (schema 1) artifact: just an items array.
+    return { items: parsed, stages: [] };
+  }
+  return {
+    items: Array.isArray(parsed.items) ? parsed.items : [],
+    stages: Array.isArray(parsed.stages) ? parsed.stages : [],
+  };
 }
 
 function sleep(ms) {
