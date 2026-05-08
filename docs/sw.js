@@ -24,7 +24,7 @@
 //     diagnostics in the page can show which SW is running.
 // =============================================================================
 
-const CACHE_VERSION = "film-beamer-v28-shared-drive";
+const CACHE_VERSION = "film-beamer-v29-drive-oauth";
 const CACHE_PREFIX = "film-beamer-";
 
 // Things that change every release — must come from network when possible.

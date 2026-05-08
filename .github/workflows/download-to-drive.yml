@@ -109,20 +109,42 @@ jobs:
             echo "- yt-dlp format: \`$format\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Check secrets are configured
+      - name: Check secrets and pick auth mode
+        id: auth
         env:
           GDRIVE_SERVICE_ACCOUNT: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
+          GDRIVE_OAUTH_TOKEN: ${{ secrets.GDRIVE_OAUTH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           set -euo pipefail
-          if [ -z "${GDRIVE_SERVICE_ACCOUNT:-}" ]; then
-            echo "::error::Repository secret GDRIVE_SERVICE_ACCOUNT is not set. See README for setup."
+          # Two ways to authenticate to Drive:
+          #   * `oauth` — refresh token (rclone authorize "drive"), uploads
+          #     happen as the user, files count against the user's quota.
+          #     Required for personal @gmail.com accounts because Service
+          #     Accounts have no quota and Shared Drives need Workspace.
+          #   * `sa`    — Service Account JSON, only works against a Shared
+          #     Drive (Workspace). Kept for legacy / Workspace setups.
+          # If both are set, OAuth wins because it's the path that actually
+          # works against personal accounts.
+          mode=""
+          if [ -n "${GDRIVE_OAUTH_TOKEN:-}" ]; then
+            mode="oauth"
+          elif [ -n "${GDRIVE_SERVICE_ACCOUNT:-}" ]; then
+            mode="sa"
+          fi
+          if [ -z "$mode" ]; then
+            echo "::error::Neither GDRIVE_OAUTH_TOKEN nor GDRIVE_SERVICE_ACCOUNT is set. Open the app's settings → «Загрузить ключ Google Drive» and pick OAuth (recommended for personal accounts) or Service Account."
             exit 1
           fi
-          if [ -z "${GDRIVE_FOLDER_ID:-}" ]; then
-            echo "::error::Repository secret GDRIVE_FOLDER_ID is not set. See README for setup."
+          # Folder ID is optional in OAuth mode — files land in the user's
+          # My Drive root if it's blank. In SA mode we still require it
+          # because the SA has no usable root of its own.
+          if [ "$mode" = "sa" ] && [ -z "${GDRIVE_FOLDER_ID:-}" ]; then
+            echo "::error::Repository secret GDRIVE_FOLDER_ID is required in Service Account mode."
             exit 1
           fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Drive auth mode: $mode"
 
       - name: Install tools
         run: |
@@ -149,11 +171,13 @@ jobs:
           aria2c --version | head -n1
 
       - name: Setup Python (for Drive shared-drive detection)
+        if: steps.auth.outputs.mode == 'sa'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Detect Shared Drive for target folder
+        if: steps.auth.outputs.mode == 'sa'
         id: drive_detect
         env:
           GDRIVE_SERVICE_ACCOUNT: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
@@ -178,7 +202,44 @@ jobs:
           export SA_PATH="$sa_path"
           python scripts/drive/detect_shared_drive.py
 
-      - name: Configure rclone
+      - name: Configure rclone (OAuth)
+        if: steps.auth.outputs.mode == 'oauth'
+        env:
+          GDRIVE_OAUTH_TOKEN: ${{ secrets.GDRIVE_OAUTH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: |
+          set -euo pipefail
+          # OAuth path: the secret holds whatever `rclone authorize "drive"`
+          # printed out — a JSON blob like
+          #   {"access_token":"...","token_type":"Bearer",
+          #    "refresh_token":"...","expiry":"..."}
+          # rclone keeps the refresh_token alive on its own so we don't have
+          # to do anything special in CI.
+          mkdir -p "$HOME/.config/rclone"
+          token_json="$GDRIVE_OAUTH_TOKEN"
+          if ! printf '%s' "$token_json" | jq -e '.refresh_token' >/dev/null 2>&1; then
+            echo "::error::GDRIVE_OAUTH_TOKEN does not contain a refresh_token. Re-run \`rclone authorize \"drive\"\` and copy the full JSON object into the secret."
+            exit 1
+          fi
+          {
+            printf '%s\n' '[gdrive]'
+            printf '%s\n' 'type = drive'
+            printf '%s\n' 'scope = drive'
+            printf 'token = %s\n' "$token_json"
+            if [ -n "${GDRIVE_FOLDER_ID:-}" ]; then
+              printf 'root_folder_id = %s\n' "$GDRIVE_FOLDER_ID"
+            fi
+          } > "$HOME/.config/rclone/rclone.conf"
+          chmod 600 "$HOME/.config/rclone/rclone.conf"
+          echo "Drive auth: OAuth refresh token (writes count against your personal quota)"
+          rclone --config "$HOME/.config/rclone/rclone.conf" about gdrive: 2>/dev/null | sed -n '1,8p' || true
+          rclone --config "$HOME/.config/rclone/rclone.conf" lsd gdrive: >/dev/null || {
+            echo "::error::rclone could not list the target Drive folder. The refresh token may have been revoked or the folder ID is wrong. Re-run \`rclone authorize \"drive\"\` and update GDRIVE_OAUTH_TOKEN."
+            exit 1
+          }
+
+      - name: Configure rclone (Service Account)
+        if: steps.auth.outputs.mode == 'sa'
         env:
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           TEAM_DRIVE_ID: ${{ steps.drive_detect.outputs.team_drive_id }}
@@ -198,6 +259,7 @@ jobs:
               printf 'team_drive = %s\n' "$TEAM_DRIVE_ID"
             fi
           } > "$HOME/.config/rclone/rclone.conf"
+          chmod 600 "$HOME/.config/rclone/rclone.conf"
           echo "Service account: $(jq -r .client_email "$sa_path")"
           if [ -n "${TEAM_DRIVE_ID:-}" ]; then
             echo "Using Shared Drive: $TEAM_DRIVE_ID"
@@ -357,6 +419,7 @@ jobs:
         env:
           SUBFOLDER: ${{ inputs.subfolder }}
           WORK: ${{ steps.workspace.outputs.dir }}
+          AUTH_MODE: ${{ steps.auth.outputs.mode }}
           TEAM_DRIVE_ID: ${{ steps.drive_detect.outputs.team_drive_id }}
         run: |
           set -euo pipefail
@@ -365,7 +428,7 @@ jobs:
             # rclone will create missing folders
             dest="gdrive:${SUBFOLDER}"
           fi
-          echo "Uploading $WORK -> $dest"
+          echo "Uploading $WORK -> $dest (auth: $AUTH_MODE)"
           set +e
           rclone --config "$HOME/.config/rclone/rclone.conf" \
             copy "$WORK" "$dest" \
@@ -384,23 +447,34 @@ jobs:
               {
                 echo "## Загрузка упала: storageQuotaExceeded"
                 echo ""
-                echo "У сервис-аккаунтов **нет своей квоты Google Drive**."
-                echo "Загрузка возможна только в **Shared Drive (Общий диск)** —"
-                echo "там байтами «владеет» сам Shared Drive, а не SA."
-                echo ""
-                if [ -z "${TEAM_DRIVE_ID:-}" ]; then
-                  echo "Сейчас целевая папка \`GDRIVE_FOLDER_ID\` лежит в **My Drive**, поэтому SA пишет в свою (нулевую) квоту."
+                if [ "$AUTH_MODE" = "oauth" ]; then
+                  echo "Drive вернул \`storageQuotaExceeded\` — у владельца refresh-токена"
+                  echo "закончилось место в личном Google Drive."
                   echo ""
+                  echo "Что сделать:"
+                  echo "1. Освободить место (Корзина, большие файлы) или докупить Google One: https://one.google.com"
+                  echo "2. Либо перевыпустить refresh token под другой Google-аккаунт: \`rclone authorize \"drive\"\` и обновить секрет \`GDRIVE_OAUTH_TOKEN\` через UI приложения."
+                else
+                  echo "У сервис-аккаунтов **нет своей квоты Google Drive**."
+                  echo "Загрузка возможна только в **Shared Drive (Общий диск)** —"
+                  echo "там байтами «владеет» сам Shared Drive, а не SA."
+                  echo ""
+                  if [ -z "${TEAM_DRIVE_ID:-}" ]; then
+                    echo "Сейчас целевая папка \`GDRIVE_FOLDER_ID\` лежит в **My Drive**, поэтому SA пишет в свою (нулевую) квоту."
+                    echo ""
+                  fi
+                  echo "Варианты:"
+                  echo "- **Личный @gmail.com** — переключись на OAuth: открой Настройки в приложении и используй блок «OAuth refresh token». Shared Drive в личном Google создать нельзя."
+                  echo "- **Google Workspace** — создай Shared Drive: https://drive.google.com/drive/shared-drives, добавь сервис-аккаунт как Content manager, перенеси папку внутрь и обнови \`GDRIVE_FOLDER_ID\`."
+                  echo ""
+                  echo "Документация Google: https://developers.google.com/workspace/drive/api/guides/about-shareddrives"
                 fi
-                echo "Что сделать:"
-                echo "1. Создать Shared Drive: https://drive.google.com/drive/shared-drives"
-                echo "2. Добавить email сервис-аккаунта как **Content manager** или **Manager**."
-                echo "3. Создать (или перенести) целевую папку внутри Shared Drive."
-                echo "4. Скопировать ID этой папки и обновить секрет \`GDRIVE_FOLDER_ID\` (через UI приложения или вручную в репо)."
-                echo ""
-                echo "Документация Google: https://developers.google.com/workspace/drive/api/guides/about-shareddrives"
               } >> "$GITHUB_STEP_SUMMARY"
-              echo "::error title=Drive: storageQuotaExceeded::Сервис-аккаунту запретили запись — папка лежит в My Drive. Нужен Shared Drive (см. лог + Step Summary)."
+              if [ "$AUTH_MODE" = "oauth" ]; then
+                echo "::error title=Drive: storageQuotaExceeded::Закончилось место в личном Drive у владельца refresh-токена."
+              else
+                echo "::error title=Drive: storageQuotaExceeded::Сервис-аккаунту запретили запись. Личный Google → используй OAuth; Workspace → нужен Shared Drive (см. Step Summary)."
+              fi
             fi
             exit "$rc"
           fi
@@ -420,5 +494,5 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          rm -f "$HOME/.config/rclone/sa.json" "$HOME/.config/rclone/rclone.conf" || true
+          rm -f "$HOME/.config/rclone/sa.json" "$HOME/.config/rclone/rclone.conf" /tmp/rclone.err || true
           rm -rf "$RUNNER_TEMP/beam" || true

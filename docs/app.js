@@ -1418,6 +1418,169 @@ function bindDriveUpload() {
   });
 }
 
+// ---------- Drive OAuth refresh-token uploader ----------
+// Service Accounts have **no** Drive quota of their own. Personal
+// @gmail.com accounts can't create Shared Drives (Workspace-only feature),
+// so the only way for those users to actually receive uploads is to
+// authenticate Drive **as themselves** — i.e. an OAuth refresh token.
+//
+// The simplest pipeline is:
+//   1. user runs `rclone authorize "drive"` on any machine,
+//   2. pastes the resulting JSON below,
+//   3. we sealed-box-encrypt it and PUT it as `GDRIVE_OAUTH_TOKEN`
+//      via the same code path that handles `GDRIVE_SERVICE_ACCOUNT`.
+//
+// The workflow prefers OAuth over SA when both secrets exist.
+function setDriveOAuthStatus(text, kind = "info") {
+  const el = $("#drive-oauth-status");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className =
+    "text-xs " +
+    (text ? "" : "hidden ") +
+    (kind === "success"
+      ? "text-emerald-300"
+      : kind === "error"
+      ? "text-rose-300"
+      : "text-slate-400");
+  if (text) {
+    try {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch {
+      /* older browsers */
+    }
+  }
+}
+
+function parseDriveOAuthTokenJson(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      "Не удалось распарсить JSON. Скопируй вывод `rclone authorize \"drive\"` целиком, включая обе фигурные скобки."
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("OAuth-токен должен быть JSON-объектом, а не массивом.");
+  }
+  if (typeof parsed.refresh_token !== "string" || !parsed.refresh_token) {
+    throw new Error(
+      "В JSON нет поля `refresh_token`. Перевыпусти токен через `rclone authorize \"drive\"` — там он обязательно есть."
+    );
+  }
+  // Re-serialise to drop pretty-printing whitespace and unrelated fields
+  // the user may have pasted by accident. rclone's own format only uses
+  // these four keys.
+  const clean = {
+    access_token: typeof parsed.access_token === "string" ? parsed.access_token : "",
+    token_type: typeof parsed.token_type === "string" ? parsed.token_type : "Bearer",
+    refresh_token: parsed.refresh_token,
+    expiry: typeof parsed.expiry === "string" ? parsed.expiry : "",
+  };
+  return JSON.stringify(clean);
+}
+
+function bindDriveOAuthUpload() {
+  const btn = $("#drive-oauth-upload");
+  const tokenField = $("#drive-oauth-token");
+  const folderField = $("#drive-folder");
+  if (!btn || !tokenField || !folderField) return;
+
+  // Reset the status line whenever the inputs change so a stale
+  // success/error message can't be confused with the new value.
+  const reset = () => {
+    if ($("#drive-oauth-status")?.textContent) setDriveOAuthStatus("");
+  };
+  tokenField.addEventListener("input", reset);
+  folderField.addEventListener("input", reset);
+
+  btn.addEventListener("click", async () => {
+    setDriveOAuthStatus("");
+    if (!cfg.repo) {
+      setDriveOAuthStatus(
+        "Сначала укажи репозиторий в Настройках выше.",
+        "error"
+      );
+      return;
+    }
+    if (!cfg.token) {
+      setDriveOAuthStatus(
+        "Сначала введи GitHub-токен выше и нажми «Сохранить».",
+        "error"
+      );
+      return;
+    }
+
+    const tokenRaw = tokenField.value.trim();
+    if (!tokenRaw) {
+      setDriveOAuthStatus(
+        "Вставь JSON, который выдал `rclone authorize \"drive\"`.",
+        "error"
+      );
+      return;
+    }
+
+    let cleanJson;
+    try {
+      cleanJson = parseDriveOAuthTokenJson(tokenRaw);
+    } catch (err) {
+      setDriveOAuthStatus(err.message || String(err), "error");
+      return;
+    }
+
+    const folderRaw = folderField.value.trim();
+    let folderId = null;
+    if (folderRaw) {
+      folderId = extractFolderId(folderRaw);
+      if (!folderId) {
+        setDriveOAuthStatus(
+          "Не похоже на ID папки Drive. Вставь URL вида https://drive.google.com/drive/folders/... или сам ID.",
+          "error"
+        );
+        return;
+      }
+    }
+
+    btn.disabled = true;
+    setDriveOAuthStatus("Шифрую в браузере и отправляю…");
+    try {
+      const uploaded = [];
+      const v = await uploadGitHubSecret("GDRIVE_OAUTH_TOKEN", cleanJson);
+      uploaded.push(`GDRIVE_OAUTH_TOKEN (обновлён ${formatSecretTs(v)})`);
+      if (folderId) {
+        const fv = await uploadGitHubSecret("GDRIVE_FOLDER_ID", folderId);
+        uploaded.push(`GDRIVE_FOLDER_ID (обновлён ${formatSecretTs(fv)})`);
+      }
+      setDriveOAuthStatus(
+        `Записано в GitHub Secrets и подтверждено GET-ом: ${uploaded.join(
+          "; "
+        )}. Воркфлоу теперь будет писать в Drive от твоего имени.`,
+        "success"
+      );
+      toast("OAuth-токен Drive загружен в GitHub.", "success");
+      tokenField.value = "";
+      // Refresh the audit panel so the new GDRIVE_OAUTH_TOKEN row appears
+      // without a manual page reload.
+      try {
+        if (typeof SecretsAudit !== "undefined" && SecretsAudit) {
+          SecretsAudit.refresh();
+        }
+      } catch {
+        /* SecretsAudit not loaded — fine */
+      }
+    } catch (err) {
+      const msg = err.message || String(err);
+      const hint = /\b403\b/.test(msg)
+        ? " У токена должно быть право «Secrets: Read and Write». Перевыпусти PAT с этим разрешением."
+        : "";
+      setDriveOAuthStatus(`Ошибка: ${msg}${hint}`, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 // ---------- YouTube cookies uploader ----------
 // YouTube hardened bot detection in 2025 — cloud IPs (incl. GitHub Actions
 // runners) get the "Sign in to confirm you're not a bot" wall on most
@@ -7092,6 +7255,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPaste();
   bindClearUrl();
   bindDriveUpload();
+  bindDriveOAuthUpload();
   bindYtCookiesUpload();
   bindCookieWizard();
   bindTrackersUpload();
