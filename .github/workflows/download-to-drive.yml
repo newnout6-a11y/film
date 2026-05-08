@@ -447,14 +447,75 @@ jobs:
             # rclone will create missing folders
             dest="gdrive:${SUBFOLDER}"
           fi
+          # Pre-flight summary so the user can see exactly what's about to
+          # be pushed to Drive **before** rclone runs — avoids the "wait,
+          # what's that 9a6ad6ac…torrent file in my Drive?" surprise.
+          {
+            echo "## К загрузке"
+            echo ""
+            echo "| Файл | Размер | Тип |"
+            echo "| --- | ---: | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            sz=$(stat -c%s "$f")
+            human=$(numfmt --to=iec --suffix=B "$sz")
+            base=$(basename "$f")
+            case "${base,,}" in
+              *.torrent)        kind="торрент-метаданные (пропускается)" ;;
+              *.srt|*.ass|*.vtt|*.sub|*.ssa) kind="субтитры" ;;
+              *.mp4|*.mkv|*.avi|*.mov|*.m4v|*.webm) kind="видео" ;;
+              *.mp3|*.m4a|*.flac|*.wav|*.ogg|*.opus) kind="аудио" ;;
+              *.zip|*.rar|*.7z|*.iso) kind="архив/образ" ;;
+              *.jpg|*.jpeg|*.png|*.webp) kind="обложка" ;;
+              *)                kind="другое" ;;
+            esac
+            echo "| \`$base\` | $human | $kind |" >> "$GITHUB_STEP_SUMMARY"
+          done < <(find "$WORK" -type f | sort)
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
           echo "Uploading $WORK -> $dest (auth: $AUTH_MODE)"
           set +e
+          # Knobs vs. defaults, with reasoning:
+          #   * --transfers 4 (was 8): with 8 parallel chunked uploads we hit
+          #     Drive's per-file commit step in lock-step and every retry
+          #     burned bandwidth re-uploading 1+ GiB. 4 is the sweet spot.
+          #   * --drive-chunk-size 256M (was 128M): fewer round-trips per file,
+          #     and Drive's resumable-upload commit is the slow part — so
+          #     bigger chunks = fewer commit waits per file.
+          #   * --retries 1 (was default 3): when Drive's commit hangs after
+          #     bytes already landed, rclone normally retries the *whole*
+          #     1.46-GiB file. That's what the user saw as "по второму
+          #     кругу". One try, then surface the failure clearly.
+          #   * --low-level-retries 5 (was default 10): same idea — fail
+          #     individual chunks faster instead of grinding for an hour.
+          #   * --max-duration 4h: hard ceiling so a hung commit can't keep
+          #     the runner alive for the full 350-minute job timeout.
+          #   * --drive-stop-on-upload-limit: bail immediately on quota
+          #     errors instead of retrying.
+          #   * --drive-acknowledge-abuse=true: don't fail on Drive's "this
+          #     file may be infected" warning for big AVIs.
+          #   * --exclude-from /tmp/rclone.exclude: skip torrent metadata
+          #     and aria2 control files. The .torrent itself is useless on
+          #     Drive (the user asked "что это" about
+          #     `9a6ad6ac…torrent` in the previous run).
+          # Use printf rather than a heredoc — YAML block-scalar indentation
+          # would otherwise leak into the exclude file and rclone would
+          # silently never match `          *.torrent`.
+          printf '%s\n' '*.torrent' '*.aria2' '*.aria2.tmp' '.DS_Store' 'Thumbs.db' \
+            > /tmp/rclone.exclude
           rclone --config "$HOME/.config/rclone/rclone.conf" \
             copy "$WORK" "$dest" \
-            --transfers 8 \
-            --checkers 16 \
-            --drive-chunk-size 128M \
-            --drive-upload-cutoff 128M \
+            --transfers 4 \
+            --checkers 8 \
+            --drive-chunk-size 256M \
+            --drive-upload-cutoff 256M \
+            --drive-acknowledge-abuse=true \
+            --drive-stop-on-upload-limit \
+            --retries 1 \
+            --low-level-retries 5 \
+            --max-duration 4h \
+            --exclude-from /tmp/rclone.exclude \
             --stats 10s \
             --stats-one-line \
             --progress=false \
@@ -498,17 +559,32 @@ jobs:
             exit "$rc"
           fi
 
-          echo "## Uploaded files" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Name | Size |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| --- | ---: |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Загружено в Drive"
+            echo ""
+            echo "| Файл | Размер | Тип |"
+            echo "| --- | ---: | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
           while IFS= read -r f; do
             [ -z "$f" ] && continue
+            base=$(basename "$f")
+            # Mirror the pre-flight exclude list — these never reach Drive,
+            # so they shouldn't show up in the "Загружено" summary either.
+            case "${base,,}" in
+              *.torrent|*.aria2|*.aria2.tmp|.ds_store|thumbs.db) continue ;;
+            esac
             sz=$(stat -c%s "$f")
             human=$(numfmt --to=iec --suffix=B "$sz")
-            base=$(basename "$f")
-            echo "| \`$base\` | $human |" >> "$GITHUB_STEP_SUMMARY"
-          done < <(find "$WORK" -type f)
+            case "${base,,}" in
+              *.srt|*.ass|*.vtt|*.sub|*.ssa) kind="субтитры" ;;
+              *.mp4|*.mkv|*.avi|*.mov|*.m4v|*.webm) kind="видео" ;;
+              *.mp3|*.m4a|*.flac|*.wav|*.ogg|*.opus) kind="аудио" ;;
+              *.zip|*.rar|*.7z|*.iso) kind="архив/образ" ;;
+              *.jpg|*.jpeg|*.png|*.webp) kind="обложка" ;;
+              *)                kind="другое" ;;
+            esac
+            echo "| \`$base\` | $human | $kind |" >> "$GITHUB_STEP_SUMMARY"
+          done < <(find "$WORK" -type f | sort)
 
       - name: Cleanup
         if: always()
