@@ -20,11 +20,11 @@
     <meta name="application-name" content="Film Beamer" />
     <meta name="format-detection" content="telephone=no" />
 
-    <link rel="manifest" href="./manifest.webmanifest?v=23" />
+    <link rel="manifest" href="./manifest.webmanifest?v=24" />
     <link rel="icon" type="image/svg+xml" href="./icon.svg" />
     <link rel="apple-touch-icon" href="./icon.svg" />
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="./style.css?v=23" />
+    <link rel="stylesheet" href="./style.css?v=24" />
     <script>
       tailwind.config = {
         theme: {
@@ -221,10 +221,13 @@
                 placeholder="Название фильма / сериала"
                 class="grow rounded-xl border border-white/10 bg-ink-900 px-4 py-3 text-base text-slate-100 placeholder:text-slate-500 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
               />
+              <!-- px-5 + whitespace-nowrap so «Найти» doesn't crash into
+                   the rounded-xl corner on Yandex.Browser mobile, where
+                   the gradient was clipping the trailing «и». -->
               <button
                 id="search-btn"
                 type="button"
-                class="shrink-0 rounded-xl bg-gradient-to-r from-accent-500 to-fuchsia-500 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-accent-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+                class="shrink-0 whitespace-nowrap rounded-xl bg-gradient-to-r from-accent-500 to-fuchsia-500 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-accent-500/30 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <span id="search-btn-label">Найти</span>
               </button>
@@ -675,7 +678,8 @@
             <button
               id="drive-upload"
               type="button"
-              class="w-full rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+              class="w-full whitespace-nowrap rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+              data-default-label="Загрузить в GitHub Secrets"
             >
               Загрузить в GitHub Secrets
             </button>
@@ -1585,7 +1589,7 @@
       style="bottom: max(env(safe-area-inset-bottom), 1.5rem);"
     ></div>
 
-    <script src="./app.js?v=23"></script>
+    <script src="./app.js?v=24"></script>
     <script>
       // Service worker registration is handled inside app.js (registerServiceWorker)
       // so the page can detect updates and show the banner. We keep this stub
