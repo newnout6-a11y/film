@@ -28,6 +28,11 @@ STAGE_ORDER = (
     ("apibay", "Pirate Bay"),
     ("kinozal", "Kinozal"),
     ("nnm", "NNM-Club"),
+    ("kodik", "Kodik"),
+    ("videocdn", "VideoCDN"),
+    ("hdrezka", "HDRezka"),
+    ("bazon", "Bazon"),
+    ("kinopoisk", "Кинопоиск"),
 )
 QUALITY_BOOST = (
     ("2160p", 6),
@@ -134,7 +139,11 @@ def main() -> int:
     # is at least surfaced and the user can decide.
     cleaned: list[dict] = []
     for it in items:
-        if not it.get("magnet") or not it.get("title"):
+        # Accept entries with either a magnet link (torrent trackers)
+        # or a stream_url (media APIs like Kodik/VideoCDN).
+        if not it.get("title"):
+            continue
+        if not it.get("magnet") and not it.get("stream_url"):
             continue
         seeders = it.get("seeders")
         if not isinstance(seeders, int):
@@ -151,25 +160,41 @@ def main() -> int:
         cleaned.append(it)
     items = cleaned
 
-    # Deduplicate by info_hash (or magnet) — prefer the entry with most seeders.
+    # Deduplicate by info_hash (or magnet or stream_url) — prefer
+    # the entry with most seeders (torrent) or highest quality (stream).
     by_key: dict[str, dict] = {}
     for it in items:
-        key = (it.get("info_hash") or it.get("magnet") or "").lower()
+        key = (
+            (it.get("info_hash") or "").lower()
+            or (it.get("magnet") or "").lower()
+            or (it.get("stream_url") or "").lower()
+        )
         if not key:
             continue
         existing = by_key.get(key)
-        if existing is None or it["seeders"] > existing["seeders"]:
+        if existing is None:
+            by_key[key] = it
+        elif it.get("stream_url") and existing.get("stream_url"):
+            # Both are stream results — prefer higher quality.
+            if quality_score(it.get("title", "")) > quality_score(existing.get("title", "")):
+                by_key[key] = it
+        elif it["seeders"] > existing["seeders"]:
             by_key[key] = it
     deduped = list(by_key.values())
     log(f"aggregate: {len(deduped)} after dedup")
 
     def score(it: dict) -> tuple:
         rel = relevance_score(query, it["title"]) if query else 0
+        # Stream results get a quality bonus so they rank alongside
+        # well-seeded torrents.
+        is_stream = bool(it.get("stream_url"))
+        stream_quality = quality_score(it.get("quality", "")) if is_stream else 0
         return (
             rel,
             it["seeders"],
-            quality_score(it["title"]),
+            quality_score(it["title"]) + stream_quality,
             it.get("size", 0),
+            1 if is_stream else 0,  # prefer streams over torrents
         )
 
     deduped.sort(key=score, reverse=True)
@@ -188,6 +213,12 @@ def main() -> int:
             "kinozal": "kinozal",
             "nnm-club": "nnm",
             "nnm": "nnm",
+            "kodik": "kodik",
+            "videocdn": "videocdn",
+            "hdrezka": "hdrezka",
+            "bazon": "bazon",
+            "кинопоиск": "kinopoisk",
+            "kinopoisk": "kinopoisk",
         }.get(tr, tr)
         per_tracker_counts[slug] = per_tracker_counts.get(slug, 0) + 1
 

@@ -53,6 +53,7 @@ jobs:
           INPUT_URL: ${{ inputs.url }}
           QUALITY: ${{ inputs.quality }}
           CUSTOM_FORMAT: ${{ inputs.ytdlp_format }}
+          REAL_DEBRID_API_KEY: ${{ secrets.REAL_DEBRID_API_KEY }}
         run: |
           set -euo pipefail
           url="$INPUT_URL"
@@ -60,11 +61,16 @@ jobs:
           # Accept magnet:?, http(s):// and .torrent URLs.
           mode=""
           if [[ "$url" =~ ^magnet:\? ]]; then
-            mode="torrent"
+            # Prefer Debrid over raw BitTorrent when a key is available.
+            if [ -n "${REAL_DEBRID_API_KEY:-}" ]; then
+              mode="debrid"
+            else
+              mode="torrent"
+            fi
           elif [[ "$url" =~ ^https?:// ]]; then
             if [[ "$url" =~ \.torrent($|\?) ]]; then
               mode="torrent"
-            elif [[ "$url" =~ (youtube\.com|youtu\.be|vimeo\.com|tiktok\.com|twitter\.com|x\.com|twitch\.tv|dailymotion\.com|rutube\.ru|vk\.com|bilibili\.com|facebook\.com|instagram\.com|ok\.ru|coub\.com) ]]; then
+            elif [[ "$url" =~ (youtube\.com|youtu\.be|vimeo\.com|tiktok\.com|twitter\.com|x\.com|twitch\.tv|dailymotion\.com|rutube\.ru|vk\.com|bilibili\.com|facebook\.com|instagram\.com|ok\.ru|coub\.com|kinopoisk\.ru|hd\.kinopoisk\.ru) ]]; then
               mode="ytdlp"
             elif [[ "$url" =~ \.(mp4|mkv|webm|avi|mov|m4v|mp3|m4a|flac|wav|ogg|opus|zip|rar|7z|iso|pdf|epub|cbr|cbz)($|\?) ]]; then
               mode="aria2"
@@ -355,6 +361,70 @@ jobs:
           # rclone copy will recurse — both work.
           ls -lahR "$WORK"
 
+      - name: Download via Real-Debrid (magnet → DDL → Drive)
+        if: steps.detect.outputs.mode == 'debrid'
+        id: debrid
+        env:
+          MAGNET: ${{ steps.detect.outputs.url }}
+          REAL_DEBRID_API_KEY: ${{ secrets.REAL_DEBRID_API_KEY }}
+          SUBFOLDER: ${{ inputs.subfolder }}
+          FILENAME: ${{ inputs.filename }}
+        run: |
+          set -euo pipefail
+          # Install Python deps for the Debrid script.
+          pip install --quiet "requests>=2.31" 2>/dev/null || true
+
+          # Run the Debrid script — it outputs the DDL URL.
+          ddl_url="$(python scripts/debrid/real_debrid.py)"
+          if [ -z "$ddl_url" ]; then
+            echo "::error::Real-Debrid returned an empty DDL URL"
+            exit 1
+          fi
+          echo "ddl_url=$ddl_url" >> "$GITHUB_OUTPUT"
+          echo "Debrid DDL URL obtained (${#ddl_url} chars)"
+
+          # Determine the target path in Drive.
+          dest="gdrive:"
+          if [ -n "${SUBFOLDER:-}" ]; then
+            dest="gdrive:${SUBFOLDER}"
+          fi
+
+          # If a filename was specified, use it; otherwise let rclone
+          # derive it from the URL (which usually includes a hash).
+          filename_arg=()
+          if [ -n "${FILENAME:-}" ]; then
+            # rclone copyurl needs the full remote path with filename.
+            dest="${dest}/${FILENAME}"
+          fi
+
+          # Stream the DDL URL directly to Google Drive via rclone copyurl.
+          # This completely bypasses local disk I/O — the file never touches
+          # the runner's ephemeral storage.  For cached (popular) torrents
+          # the Debrid CDN saturates the runner's bandwidth at hundreds of
+          # MB/s over HTTPS, no P2P involved.
+          echo "Streaming DDL → Drive: $dest"
+          rclone --config "$HOME/.config/rclone/rclone.conf" \
+            copyurl "$ddl_url" "$dest" \
+            --transfers 1 \
+            --drive-chunk-size 256M \
+            --drive-acknowledge-abuse=true \
+            --drive-stop-on-upload-limit \
+            --tpslimit 10 \
+            --tpslimit-burst 20 \
+            --retries 3 \
+            --retries-sleep 60s \
+            --stats 10s \
+            --stats-one-line \
+            --progress=false \
+            --log-level INFO
+
+          {
+            echo "## Загружено через Real-Debrid"
+            echo ""
+            echo "Magnet-ссылка была конвертирована в кэшированный DDL через Real-Debrid"
+            echo "и напрямую стримится в Google Drive (без записи на локальный диск)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Download with yt-dlp
         if: steps.detect.outputs.mode == 'ytdlp'
         env:
@@ -364,6 +434,7 @@ jobs:
           EXTRACT_AUDIO: ${{ steps.detect.outputs.extract_audio }}
           WORK: ${{ steps.workspace.outputs.dir }}
           YT_COOKIES: ${{ secrets.YT_COOKIES }}
+          KINOPOISK_COOKIES: ${{ secrets.KINOPOISK_COOKIES }}
         run: |
           set -euo pipefail
           cd "$WORK"
@@ -389,8 +460,20 @@ jobs:
           # via the in-app uploader (secret: YT_COOKIES), use it. This is
           # the only thing that reliably defeats hard bot-checks on
           # rate-limited / age-gated content.
+          # For Kinopoisk URLs, KINOPOISK_COOKIES takes precedence (Firefox
+          # cookies are required because Chrome's app-bound encryption
+          # prevents cookie extraction in CI/CD).
           cookies_file=""
-          if [ -n "${YT_COOKIES:-}" ]; then
+          if [[ "$URL" =~ kinopoisk\.ru ]] && [ -n "${KINOPOISK_COOKIES:-}" ]; then
+            cookies_file="$HOME/.config/yt-dlp/kinopoisk_cookies.txt"
+            mkdir -p "$(dirname "$cookies_file")"
+            printf '%s' "$KINOPOISK_COOKIES" > "$cookies_file"
+            chmod 600 "$cookies_file"
+            extra+=(--cookies "$cookies_file")
+            extra+=(--remote-components ejs:github)
+            echo "Using KINOPOISK_COOKIES from secret ($(wc -l < "$cookies_file") lines)."
+            echo "Enabled Deno JS engine for Cloudflare challenge bypass."
+          elif [ -n "${YT_COOKIES:-}" ]; then
             cookies_file="$HOME/.config/yt-dlp/cookies.txt"
             mkdir -p "$(dirname "$cookies_file")"
             printf '%s' "$YT_COOKIES" > "$cookies_file"
@@ -427,11 +510,65 @@ jobs:
                 echo "Решение: в настройках приложения открой раздел «Куки YouTube» и загрузи свой \`cookies.txt\`."
                 echo "Любое расширение типа *Get cookies.txt LOCALLY* в Chrome/Firefox экспортирует его за пару кликов."
                 echo "Файл попадёт в репозиторный секрет \`YT_COOKIES\` и используется только этим воркфлоу."
+              elif [[ "$URL" =~ kinopoisk\.ru ]] && [ -z "${KINOPOISK_COOKIES:-}" ]; then
+                echo "Кинопоиск требует авторизации для доступа к видео по подписке."
+                echo "Решение: в настройках приложения открой раздел «Куки Кинопоиска» и загрузи \`cookies.txt\` из Firefox."
+                echo "Chrome не подходит — app-bound encryption не даёт расшифровать куки в CI/CD."
+                echo "Файл попадёт в репозиторный секрет \`KINOPOISK_COOKIES\`."
               fi
             } >> "$GITHUB_STEP_SUMMARY"
             exit "$ytdlp_rc"
           fi
           ls -lah "$WORK"
+
+      - name: Decrypt Widevine DRM (Kinopoisk)
+        if: steps.detect.outputs.mode == 'ytdlp' && env.WIDEVINE_DECRYPTION_KEY != ''
+        env:
+          WIDEVINE_DECRYPTION_KEY: ${{ secrets.WIDEVINE_DECRYPTION_KEY }}
+          WORK: ${{ steps.workspace.outputs.dir }}
+        run: |
+          set -euo pipefail
+          # This step runs when a WIDEVINE_DECRYPTION_KEY secret is set.
+          # The key is a 128-bit hex string (32 chars) obtained via
+          # EME hook interception or CDM extraction (KeyDive).
+          #
+          # yt-dlp downloads the encrypted segments and concatenates them
+          # into a single .mp4 file.  ffmpeg with -decryption_key performs
+          # lossless AES-128-CTR decryption without re-encoding (-codec copy).
+          #
+          # If no encrypted .mp4 files are found, this step is a no-op.
+          cd "$WORK"
+          key="$WIDEVINE_DECRYPTION_KEY"
+          decrypted=0
+          for f in *.mp4 *.mkv *.m4v *.ts *.m4s; do
+            [ -f "$f" ] || continue
+            # Check if the file is actually encrypted by probing with ffprobe.
+            # Encrypted files typically fail to probe or report "encryption".
+            if ffprobe -i "$f" -show_entries format=encryption 2>/dev/null | grep -q "encryption"; then
+              out="${f%.*}_decrypted.${f##*.}"
+              echo "Decrypting $f → $out (key=${key:0:8}…)"
+              ffmpeg -decryption_key "$key" -i "$f" -codec copy "$out"
+              rc=$?
+              if [ "$rc" -eq 0 ] && [ -f "$out" ]; then
+                mv "$out" "$f"
+                decrypted=$((decrypted + 1))
+              else
+                echo "::warning::ffmpeg decryption failed for $f (exit $rc), leaving encrypted file"
+                rm -f "$out" 2>/dev/null || true
+              fi
+            fi
+          done
+          echo "Decrypted $decrypted file(s)"
+          if [ "$decrypted" -gt 0 ]; then
+            {
+              echo "## Widevine DRM: дешифровка"
+              echo ""
+              echo "Файлов расшифровано: **$decrypted**"
+              echo ""
+              echo "Использован ключ AES-128 из секрета \`WIDEVINE_DECRYPTION_KEY\`."
+              echo "Дешифровка выполнена через \`ffmpeg -decryption_key -codec copy\` — без потерь качества."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload to Google Drive
         id: upload

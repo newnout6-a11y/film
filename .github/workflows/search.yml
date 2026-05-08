@@ -80,6 +80,49 @@ jobs:
           NNM_COOKIES: ${{ secrets.NNM_COOKIES }}
         run: python scripts/search/nnmclub.py
 
+      - name: Search Kodik
+        if: always()
+        continue-on-error: true
+        env:
+          QUERY: ${{ inputs.query }}
+          KODIK_API_TOKEN: ${{ secrets.KODIK_API_TOKEN }}
+          KINOPOISK_ID: ${{ secrets.KINOPOISK_ID }}
+        run: python scripts/search/kodik.py
+
+      - name: Search VideoCDN
+        if: always()
+        continue-on-error: true
+        env:
+          QUERY: ${{ inputs.query }}
+          VIDEOCDN_API_TOKEN: ${{ secrets.VIDEOCDN_API_TOKEN }}
+          KINOPOISK_ID: ${{ secrets.KINOPOISK_ID }}
+        run: python scripts/search/videocdn.py
+
+      - name: Search HDRezka
+        if: always()
+        continue-on-error: true
+        env:
+          QUERY: ${{ inputs.query }}
+          HDREZKA_COOKIES: ${{ secrets.HDREZKA_COOKIES }}
+        run: python scripts/search/hdrezka.py
+
+      - name: Search Bazon
+        if: always()
+        continue-on-error: true
+        env:
+          QUERY: ${{ inputs.query }}
+          BAZON_API_TOKEN: ${{ secrets.BAZON_API_TOKEN }}
+          KINOPOISK_ID: ${{ secrets.KINOPOISK_ID }}
+        run: python scripts/search/bazon.py
+
+      - name: Search Kinopoisk (metadata)
+        if: always()
+        continue-on-error: true
+        env:
+          QUERY: ${{ inputs.query }}
+          KINOPOISK_API_KEY: ${{ secrets.KINOPOISK_API_KEY }}
+        run: python scripts/search/kinopoisk.py
+
       - name: Aggregate results
         if: always()
         env:
