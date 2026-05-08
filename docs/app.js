@@ -1072,6 +1072,9 @@ function bindForm() {
           "Не получилось определить ветку репо — укажи её вручную в Настройках."
         );
       }
+      // Snapshot existing run ids so trackDispatchedRun can find the new
+      // one by id (clock-skew-proof).
+      const knownRunIds = await snapshotRunIds(gh, cfg.workflow);
       const dispatchedAt = Date.now();
       await gh.dispatchWorkflow({ ref, inputs });
       toast("Запущено — раннер качает…", "success");
@@ -1080,7 +1083,7 @@ function bindForm() {
       setTimeout(() => refreshRuns(true), 1500);
       // Open the live progress modal so the user sees actual stage transitions.
       openProgressDialog("Закидываем на Drive");
-      trackDispatchedRun(cfg.workflow, dispatchedAt, "Закидывание").catch(
+      trackDispatchedRun(cfg.workflow, dispatchedAt, "Закидывание", knownRunIds).catch(
         () => {}
       );
     } catch (err) {
@@ -2383,6 +2386,9 @@ async function beamMagnet(item, btn) {
     if (!ref) {
       throw new Error("Не получилось определить ветку репо.");
     }
+    // Snapshot existing run ids so trackDispatchedRun can find the new
+    // one by id (clock-skew-proof).
+    const knownRunIds = await snapshotRunIds(gh, cfg.workflow);
     const dispatchedAt = Date.now();
     await gh.dispatchWorkflow({
       ref,
@@ -2397,7 +2403,7 @@ async function beamMagnet(item, btn) {
     toast("Запущено — раннер качает торрент…", "success");
     setTimeout(() => refreshRuns(true), 1500);
     openProgressDialog(`Закидываем: ${item.title || "торрент"}`);
-    trackDispatchedRun(cfg.workflow, dispatchedAt, "Закидывание").catch(
+    trackDispatchedRun(cfg.workflow, dispatchedAt, "Закидывание", knownRunIds).catch(
       () => {}
     );
   } catch (err) {
@@ -2499,6 +2505,13 @@ function bindSearch() {
       const ref = await resolveBranch();
       if (!ref) throw new Error("Не получилось определить ветку репо.");
 
+      // Snapshot recent run IDs *before* dispatch so we can detect the new
+      // run by id. Comparing created_at against Date.now() is unreliable on
+      // mobiles with skewed clocks — the device timestamp can land ahead of
+      // the GitHub server timestamp by minutes, and no run ever satisfies
+      // the predicate.
+      const knownRunIds = await snapshotRunIds(gh, SEARCH_WORKFLOW);
+
       dispatchedAt = Date.now();
       // Dispatch search.yml with the query input.
       await gh._fetch(
@@ -2515,8 +2528,8 @@ function bindSearch() {
 
       renderSearchStages([]);
 
-      // Locate the run we just dispatched.
-      const run = await waitForRun(gh, dispatchedAt);
+      // Locate the run we just dispatched (by id, not by timestamp).
+      const run = await waitForRun(gh, knownRunIds);
       if (!run) throw new Error("Не нашёл наш запуск среди недавних.");
 
       // Poll job steps until the run is completed.
@@ -2552,18 +2565,34 @@ function bindSearch() {
   });
 }
 
-async function waitForRun(gh, dispatchedAt) {
-  const deadline = Date.now() + 60 * 1000;
+// Snapshots the IDs of recent workflow_dispatch runs for `workflowFile`.
+// Used to detect a freshly-dispatched run by id (robust against device
+// clock skew that breaks created_at-based matching).
+async function snapshotRunIds(gh, workflowFile) {
+  const known = new Set();
+  try {
+    const data = await gh.listRunsForWorkflow(workflowFile, {
+      event: "workflow_dispatch",
+      per_page: "20",
+    });
+    for (const r of data.workflow_runs || []) known.add(r.id);
+  } catch (err) {
+    console.warn("snapshotRunIds:", err);
+  }
+  return known;
+}
+
+async function waitForRun(gh, knownRunIds) {
+  const deadline = Date.now() + 90 * 1000;
   while (Date.now() < deadline) {
     try {
       const data = await gh.listRunsForWorkflow(SEARCH_WORKFLOW, {
         event: "workflow_dispatch",
       });
       const runs = data.workflow_runs || [];
-      // Pick the most recent run created at-or-after dispatch time.
-      const run = runs.find(
-        (r) => new Date(r.created_at).getTime() >= dispatchedAt - 5000
-      );
+      // /runs returns newest first — pick the first id we did not see in
+      // the pre-dispatch snapshot.
+      const run = runs.find((r) => !knownRunIds.has(r.id));
       if (run) return run;
     } catch (err) {
       console.warn("waitForRun:", err);
@@ -3102,7 +3131,7 @@ function setProgressSubtitle(text) {
 // fanciest error handling: exponential backoff on transient 5xx, hard
 // cancel on rate-limits, sessionStorage persistence so a refresh resumes
 // tracking, and a tail of the runner log when the job fails.
-async function trackDispatchedRun(workflowFile, dispatchedAt, baseTitle) {
+async function trackDispatchedRun(workflowFile, dispatchedAt, baseTitle, knownRunIds) {
   const epoch = ++_trackEpoch;
   const isStillCurrent = () => epoch === _trackEpoch && _progressActive;
   ActiveRunStore.markPending({ workflowFile, dispatchedAt, baseTitle });
@@ -3111,14 +3140,22 @@ async function trackDispatchedRun(workflowFile, dispatchedAt, baseTitle) {
     const gh = new GitHubSearchClient(cfg);
     let run = null;
     const findDeadline = Date.now() + 90_000;
+    // Prefer matching by id (clock-skew-proof). When resumed after a page
+    // reload we don't have a snapshot, so fall back to the timestamp check.
+    const matchByNewId = knownRunIds instanceof Set;
     while (Date.now() < findDeadline && isStillCurrent()) {
       try {
         const data = await gh.listRunsForWorkflow(workflowFile, {
           event: "workflow_dispatch",
         });
-        run = (data.workflow_runs || []).find(
-          (r) => new Date(r.created_at).getTime() >= dispatchedAt - 5000
-        );
+        const runs = data.workflow_runs || [];
+        if (matchByNewId) {
+          run = runs.find((r) => !knownRunIds.has(r.id));
+        } else {
+          run = runs.find(
+            (r) => new Date(r.created_at).getTime() >= dispatchedAt - 5000
+          );
+        }
         backoffMs = 1500;
       } catch (err) {
         ErrorLog.push(`Поиск запуска: ${err.message || err}`);
