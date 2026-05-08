@@ -20,44 +20,19 @@
     <meta name="application-name" content="Film Beamer" />
     <meta name="format-detection" content="telephone=no" />
 
-    <link rel="manifest" href="./manifest.webmanifest?v=27" />
+    <link rel="manifest" href="./manifest.webmanifest?v=28" />
     <link rel="icon" type="image/svg+xml" href="./icon.svg" />
     <link rel="apple-touch-icon" href="./icon.svg" />
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="./style.css?v=27" />
-    <script>
-      tailwind.config = {
-        theme: {
-          extend: {
-            fontFamily: {
-              sans: [
-                "Inter",
-                "ui-sans-serif",
-                "system-ui",
-                "-apple-system",
-                "Segoe UI",
-                "Roboto",
-                "sans-serif",
-              ],
-            },
-            colors: {
-              ink: {
-                950: "#07080c",
-                900: "#0b0d14",
-                800: "#10131c",
-                700: "#161a26",
-                600: "#1f2533",
-              },
-              accent: {
-                500: "#7c5cff",
-                400: "#9d86ff",
-                300: "#bfb0ff",
-              },
-            },
-          },
-        },
-      };
-    </script>
+    <!-- Pre-compiled Tailwind bundle (23 KB minified) replaces the 350 KB
+         Tailwind Play CDN script. The config lives at /tailwind.config.js
+         and the build is in scripts/build_tailwind.sh. -->
+    <link rel="preload" href="./tailwind.css?v=28" as="style" />
+    <link rel="preload" href="./style.css?v=28" as="style" />
+    <link rel="preload" href="./app.js?v=28" as="script" />
+    <link rel="dns-prefetch" href="https://api.github.com" />
+    <link rel="preconnect" href="https://api.github.com" crossorigin />
+    <link rel="stylesheet" href="./tailwind.css?v=28" />
+    <link rel="stylesheet" href="./style.css?v=28" />
   </head>
   <body class="min-h-screen bg-ink-950 text-slate-100 antialiased font-sans selection:bg-accent-500/30">
     <div class="bg-grid pointer-events-none fixed inset-0 -z-10"></div>
@@ -654,6 +629,19 @@
                 Пишется в секрет <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">GDRIVE_FOLDER_ID</code>.
               </span>
             </label>
+
+            <div class="rounded-lg border border-amber-300/30 bg-amber-500/10 p-3 text-xs text-amber-100">
+              <p class="font-semibold">Папка должна быть в Shared Drive (Общий диск).</p>
+              <p class="mt-1">
+                У сервис-аккаунтов нет своего места в Drive. Загрузка в обычную папку «Мой диск» падает с
+                <code class="rounded bg-ink-900/40 px-1 text-[11px]">storageQuotaExceeded</code> — даже если папку с ним поделили.
+              </p>
+              <ol class="mt-2 list-decimal space-y-0.5 pl-5">
+                <li>Создай <a class="underline decoration-dotted underline-offset-2 hover:text-amber-50" href="https://drive.google.com/drive/shared-drives" target="_blank" rel="noreferrer noopener">Shared Drive</a>.</li>
+                <li>Добавь сервис-аккаунт как <em>Content manager</em>.</li>
+                <li>Создай (или перенеси) папку внутрь Shared Drive и сюда вставь её ID.</li>
+              </ol>
+            </div>
 
             <label class="block">
               <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Service account JSON</span>

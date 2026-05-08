@@ -24,7 +24,17 @@ import sys
 
 import requests
 
-from common import env, log, to_magnet, write_results
+from common import (
+    STATUS_BLOCKED,
+    STATUS_FAILED,
+    STATUS_NO_RESULTS,
+    STATUS_OK,
+    env,
+    log,
+    to_magnet,
+    write_results,
+    write_status,
+)
 
 TRACKER_LABEL = "Pirate Bay"
 TRACKER_SLUG = "apibay"
@@ -51,7 +61,8 @@ BROWSER_HEADERS = {
 }
 
 
-def fetch_json(query: str) -> list[dict] | None:
+def fetch_json(query: str) -> tuple[list[dict] | None, str]:
+    """Try every mirror; on failure return (None, "<short reason>")."""
     last = ""
     for base in JSON_ENDPOINTS:
         try:
@@ -84,12 +95,12 @@ def fetch_json(query: str) -> list[dict] | None:
             log(f"apibay: {last}")
             continue
         log(f"apibay: got {len(data)} raw row(s) from {base}")
-        return data
+        return data, ""
     log(
         "apibay: every mirror failed (last: "
         f"{last}). Public results still come from rutor.py."
     )
-    return None
+    return None, last or "все зеркалы недоступны"
 
 
 def main() -> int:
@@ -97,12 +108,28 @@ def main() -> int:
     if not query:
         log("apibay: empty query, skipping")
         write_results(TRACKER_SLUG, [])
+        write_status(
+            TRACKER_SLUG,
+            label=TRACKER_LABEL,
+            status=STATUS_NO_RESULTS,
+            reason="пустой запрос",
+        )
         return 0
 
     log(f"apibay: searching {query!r}")
-    data = fetch_json(query)
+    data, reason = fetch_json(query)
     if data is None:
         write_results(TRACKER_SLUG, [])
+        # apibay-style mirrors are notoriously Cloudflare-walled from
+        # GitHub Actions IPs, so we surface "blocked" rather than a
+        # generic failure when every mirror returns 403.
+        st = STATUS_BLOCKED if "403" in reason or "Cloudflare" in reason else STATUS_FAILED
+        write_status(
+            TRACKER_SLUG,
+            label=TRACKER_LABEL,
+            status=st,
+            reason=reason,
+        )
         return 0
 
     items = []
@@ -130,6 +157,12 @@ def main() -> int:
 
     log(f"apibay: parsed {len(items)} usable result(s)")
     write_results(TRACKER_SLUG, items)
+    write_status(
+        TRACKER_SLUG,
+        label=TRACKER_LABEL,
+        status=STATUS_OK if items else STATUS_NO_RESULTS,
+        count=len(items),
+    )
     return 0
 
 

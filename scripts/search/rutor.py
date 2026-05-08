@@ -42,12 +42,16 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import (  # noqa: E402
+    STATUS_BLOCKED,
+    STATUS_NO_RESULTS,
+    STATUS_OK,
     env,
     log,
     parse_int,
     parse_size,
     to_magnet,
     write_results,
+    write_status,
 )
 
 TRACKER_LABEL = "Rutor"
@@ -210,12 +214,24 @@ def main() -> int:
     if not query:
         log("rutor: empty query, skipping")
         write_results(TRACKER_SLUG, [])
+        write_status(
+            TRACKER_SLUG,
+            label=TRACKER_LABEL,
+            status=STATUS_NO_RESULTS,
+            reason="пустой запрос",
+        )
         return 0
 
     log(f"rutor: searching {query!r}")
     html = fetch_html(query)
     if html is None:
         write_results(TRACKER_SLUG, [])
+        write_status(
+            TRACKER_SLUG,
+            label=TRACKER_LABEL,
+            status=STATUS_BLOCKED,
+            reason="ни одно зеркало rutor не ответило",
+        )
         return 0
 
     rows = parse_search(html)
@@ -223,6 +239,12 @@ def main() -> int:
     rows = rows[:TOP_N]
     log(f"rutor: parsed {len(rows)} usable result(s)")
     write_results(TRACKER_SLUG, rows)
+    write_status(
+        TRACKER_SLUG,
+        label=TRACKER_LABEL,
+        status=STATUS_OK if rows else STATUS_NO_RESULTS,
+        count=len(rows),
+    )
     return 0
 
 

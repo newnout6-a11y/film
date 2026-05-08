@@ -148,21 +148,43 @@ jobs:
           deno --version | head -n1
           aria2c --version | head -n1
 
-      - name: Configure rclone
+      - name: Setup Python (for Drive shared-drive detection)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Detect Shared Drive for target folder
+        id: drive_detect
         env:
           GDRIVE_SERVICE_ACCOUNT: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           set -euo pipefail
+          # Service Accounts have **no** personal Drive quota. Uploading
+          # into a regular My Drive folder fails with `storageQuotaExceeded`
+          # even when the folder is shared with the SA, because writes are
+          # accounted to the SA's (empty) quota. Files upload successfully
+          # only when the destination is a Shared Drive — there the bytes
+          # are owned by the Shared Drive itself.
           mkdir -p "$HOME/.config/rclone"
           sa_path="$HOME/.config/rclone/sa.json"
           printf '%s' "$GDRIVE_SERVICE_ACCOUNT" > "$sa_path"
           chmod 600 "$sa_path"
-          # Sanity check: must be valid JSON with client_email
           if ! jq -e '.client_email' "$sa_path" >/dev/null 2>&1; then
             echo "::error::GDRIVE_SERVICE_ACCOUNT does not look like a valid service account JSON."
             exit 1
           fi
+          pip install --quiet 'pyjwt[crypto]>=2.8'
+          export SA_PATH="$sa_path"
+          python scripts/drive/detect_shared_drive.py
+
+      - name: Configure rclone
+        env:
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          TEAM_DRIVE_ID: ${{ steps.drive_detect.outputs.team_drive_id }}
+        run: |
+          set -euo pipefail
+          sa_path="$HOME/.config/rclone/sa.json"
           # Use printf rather than a heredoc to avoid YAML/heredoc whitespace traps.
           {
             printf '%s\n' '[gdrive]'
@@ -170,8 +192,16 @@ jobs:
             printf '%s\n' 'scope = drive'
             printf 'service_account_file = %s\n' "$sa_path"
             printf 'root_folder_id = %s\n' "$GDRIVE_FOLDER_ID"
+            if [ -n "${TEAM_DRIVE_ID:-}" ]; then
+              # team_drive enables Shared Drive ops (the only path where
+              # SA uploads don't 403 with storageQuotaExceeded).
+              printf 'team_drive = %s\n' "$TEAM_DRIVE_ID"
+            fi
           } > "$HOME/.config/rclone/rclone.conf"
           echo "Service account: $(jq -r .client_email "$sa_path")"
+          if [ -n "${TEAM_DRIVE_ID:-}" ]; then
+            echo "Using Shared Drive: $TEAM_DRIVE_ID"
+          fi
           rclone --config "$HOME/.config/rclone/rclone.conf" lsd gdrive: || {
             echo "::error::rclone could not list the target Drive folder. Make sure the folder is shared with the service account email."
             exit 1
@@ -327,6 +357,7 @@ jobs:
         env:
           SUBFOLDER: ${{ inputs.subfolder }}
           WORK: ${{ steps.workspace.outputs.dir }}
+          TEAM_DRIVE_ID: ${{ steps.drive_detect.outputs.team_drive_id }}
         run: |
           set -euo pipefail
           dest="gdrive:"
@@ -335,6 +366,7 @@ jobs:
             dest="gdrive:${SUBFOLDER}"
           fi
           echo "Uploading $WORK -> $dest"
+          set +e
           rclone --config "$HOME/.config/rclone/rclone.conf" \
             copy "$WORK" "$dest" \
             --transfers 8 \
@@ -344,7 +376,34 @@ jobs:
             --stats 10s \
             --stats-one-line \
             --progress=false \
-            --log-level INFO
+            --log-level INFO 2> >(tee /tmp/rclone.err >&2)
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            if grep -q 'storageQuotaExceeded' /tmp/rclone.err 2>/dev/null; then
+              {
+                echo "## Загрузка упала: storageQuotaExceeded"
+                echo ""
+                echo "У сервис-аккаунтов **нет своей квоты Google Drive**."
+                echo "Загрузка возможна только в **Shared Drive (Общий диск)** —"
+                echo "там байтами «владеет» сам Shared Drive, а не SA."
+                echo ""
+                if [ -z "${TEAM_DRIVE_ID:-}" ]; then
+                  echo "Сейчас целевая папка \`GDRIVE_FOLDER_ID\` лежит в **My Drive**, поэтому SA пишет в свою (нулевую) квоту."
+                  echo ""
+                fi
+                echo "Что сделать:"
+                echo "1. Создать Shared Drive: https://drive.google.com/drive/shared-drives"
+                echo "2. Добавить email сервис-аккаунта как **Content manager** или **Manager**."
+                echo "3. Создать (или перенести) целевую папку внутри Shared Drive."
+                echo "4. Скопировать ID этой папки и обновить секрет \`GDRIVE_FOLDER_ID\` (через UI приложения или вручную в репо)."
+                echo ""
+                echo "Документация Google: https://developers.google.com/workspace/drive/api/guides/about-shareddrives"
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::error title=Drive: storageQuotaExceeded::Сервис-аккаунту запретили запись — папка лежит в My Drive. Нужен Shared Drive (см. лог + Step Summary)."
+            fi
+            exit "$rc"
+          fi
 
           echo "## Uploaded files" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"

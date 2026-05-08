@@ -26,6 +26,7 @@ PUBLIC_TRACKERS: tuple[str, ...] = (
 )
 
 RESULTS_DIR = "results"
+STATUS_DIR = os.path.join(RESULTS_DIR, "_status")
 
 
 def log(msg: str) -> None:
@@ -46,6 +47,48 @@ def write_results(tracker_slug: str, items: list[dict[str, Any]]) -> None:
         json.dump(items, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
     log(f"{tracker_slug}: wrote {len(items)} item(s) to {path}")
+
+
+# Per-tracker status. The previous implementation relied on the workflow's
+# `step.conclusion` to drive the UI's stage list, but every tracker step uses
+# `continue-on-error: true` — which means GitHub reports `conclusion=success`
+# even when the script logged "skipping" or hit an HTTP block. The result was
+# every row going green in the UI even though only one tracker actually
+# returned items. We now have each tracker write a small status blob that
+# aggregate.py merges into `results.json` so the UI can render the truth.
+
+# Status keys are intentionally a small enum so the frontend can render them
+# without parsing free-form text.
+STATUS_OK = "ok"             # ran end-to-end, returned >=0 items
+STATUS_NO_RESULTS = "empty"  # ran fine, just nothing matched
+STATUS_SKIPPED = "skipped"   # missing creds / disabled, didn't even try
+STATUS_BLOCKED = "blocked"   # hit a block (Cloudflare, captcha, IP ban)
+STATUS_FAILED = "failed"     # crash / unknown error
+
+
+def write_status(
+    tracker_slug: str,
+    *,
+    status: str,
+    label: str,
+    count: int = 0,
+    reason: str = "",
+) -> None:
+    """Persist a status blob for a tracker so aggregate.py can pick it up."""
+    os.makedirs(STATUS_DIR, exist_ok=True)
+    path = os.path.join(STATUS_DIR, f"{tracker_slug}.json")
+    payload = {
+        "slug": tracker_slug,
+        "label": label,
+        "status": status,
+        "count": int(count),
+        "reason": reason or "",
+    }
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+    log(f"{tracker_slug}: status={status} count={count} reason={reason!r}")
 
 
 def to_magnet(info_hash: str, title: str | None = None) -> str | None:
