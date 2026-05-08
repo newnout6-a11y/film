@@ -483,14 +483,25 @@ jobs:
           #   * --drive-chunk-size 256M (was 128M): fewer round-trips per file,
           #     and Drive's resumable-upload commit is the slow part — so
           #     bigger chunks = fewer commit waits per file.
-          #   * --retries 1 (was default 3): when Drive's commit hangs after
-          #     bytes already landed, rclone normally retries the *whole*
-          #     1.46-GiB file. That's what the user saw as "по второму
-          #     кругу". One try, then surface the failure clearly.
-          #   * --low-level-retries 5 (was default 10): same idea — fail
-          #     individual chunks faster instead of grinding for an hour.
+          #   * --tpslimit 10 + --tpslimit-burst 20: cap Drive API calls at
+          #     10/sec to stay well below Google's anti-abuse "Queries per
+          #     minute" limit. New Cloud projects (which is what every user
+          #     of the in-app device-flow has) can be silently throttled
+          #     below the displayed `defaultPerMinutePerProject = 840000`
+          #     budget if they look like they're abusing — see run 25568128727.
+          #   * --retries 3 + --retries-sleep 60s: a transient `rateLimitExceeded`
+          #     on the very first list call must not kill the whole Заброс.
+          #     60-second sleep gives Drive's per-minute counter time to
+          #     reset before we try again. rclone's `copy` is idempotent —
+          #     files already on Drive are skipped by hash on retry, so
+          #     this does NOT cause the original "second cycle" 1.46-GiB
+          #     re-upload (that was about a hung commit, mitigated below).
+          #   * --low-level-retries 10 (default): chunk-level pacer
+          #     handles 403 backoff for individual chunks.
           #   * --max-duration 4h: hard ceiling so a hung commit can't keep
-          #     the runner alive for the full 350-minute job timeout.
+          #     the runner alive for the full 350-minute job timeout. With
+          #     3 high-level retries x 60s sleep that's at most +3min of
+          #     overhead, well within the 4h ceiling.
           #   * --drive-stop-on-upload-limit: bail immediately on quota
           #     errors instead of retrying.
           #   * --drive-acknowledge-abuse=true: don't fail on Drive's "this
@@ -512,8 +523,11 @@ jobs:
             --drive-upload-cutoff 256M \
             --drive-acknowledge-abuse=true \
             --drive-stop-on-upload-limit \
-            --retries 1 \
-            --low-level-retries 5 \
+            --tpslimit 10 \
+            --tpslimit-burst 20 \
+            --retries 3 \
+            --retries-sleep 60s \
+            --low-level-retries 10 \
             --max-duration 4h \
             --exclude-from /tmp/rclone.exclude \
             --stats 10s \
@@ -523,6 +537,48 @@ jobs:
           rc=$?
           set -e
           if [ "$rc" -ne 0 ]; then
+            if grep -qE 'rateLimitExceeded|RATE_LIMIT_EXCEEDED|userRateLimitExceeded' /tmp/rclone.err 2>/dev/null; then
+              # Pull out the Cloud project_number from the JSON Google
+              # returns so we can deep-link the user straight to *their*
+              # project's quota page. Falls back to a generic link if the
+              # number can't be parsed.
+              proj=$(grep -oE '"consumer":[[:space:]]*"projects/[0-9]+"' /tmp/rclone.err 2>/dev/null \
+                | head -n1 \
+                | grep -oE '[0-9]+' || true)
+              proj_query=""
+              if [ -n "$proj" ]; then
+                proj_query="?project=$proj"
+              fi
+              {
+                echo "## Загрузка упала: rateLimitExceeded"
+                echo ""
+                echo "Drive API ответил **\`Quota exceeded for quota metric Queries per minute\`**"
+                echo "для твоего OAuth-проекта в Google Cloud."
+                echo ""
+                echo "Это не значит что место кончилось — это анти-абьюз: новые GCP-проекты"
+                echo "Google режет до низкой частоты запросов, особенно если до этого было"
+                echo "много неудачных попыток (как у нас с retry-петлёй ранее)."
+                echo ""
+                echo "Что сделать:"
+                echo ""
+                echo "1. **Подождать 30–60 минут** — счётчик Drive API сбрасывается раз в минуту,"
+                echo "   а анти-абьюз обычно снимается в течение часа после простоя."
+                echo "2. **ИЛИ включить Billing на проекте** (бесплатно для Drive API,"
+                echo "   карту не списывают). Это снимает с проекта пометку «новый» и"
+                echo "   возвращает базовый лимит:"
+                echo "   - https://console.cloud.google.com/billing/linkedaccount${proj_query}"
+                echo "3. **ИЛИ запросить увеличение лимита** (только если правда нужно >300/сек):"
+                echo "   - https://console.cloud.google.com/iam-admin/quotas${proj_query}"
+                echo ""
+                if [ -n "$proj" ]; then
+                  echo "Твой Cloud project_number: \`$proj\`"
+                else
+                  echo "_Не удалось извлечь project_number из ответа Google — открой Cloud Console вручную._"
+                fi
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::error title=Drive: rateLimitExceeded::Drive API ограничил твой OAuth-проект. Подожди 30–60 мин или включи Billing в Cloud Console (см. Step Summary)."
+              exit "$rc"
+            fi
             if grep -q 'storageQuotaExceeded' /tmp/rclone.err 2>/dev/null; then
               {
                 echo "## Загрузка упала: storageQuotaExceeded"
