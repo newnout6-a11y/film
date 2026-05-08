@@ -1581,6 +1581,392 @@ function bindDriveOAuthUpload() {
   });
 }
 
+// ---------- Drive OAuth: in-app device authorization flow ----------
+// Personal @gmail.com accounts can't use Service Accounts (no quota) and
+// can't create Shared Drives (Workspace-only), so the only working path
+// is OAuth: writes happen as the user, files count against the user's
+// own quota. The previous flow asked users to install rclone locally and
+// paste a JSON blob; this one runs the entire OAuth handshake in-page
+// using Google's "device authorization" grant — same scheme as smart-TV
+// sign-in. The user clicks one button, scans/clicks a Google verification
+// link, presses Allow, and we receive the refresh token directly.
+//
+// Why we ask for a user-supplied OAuth client_id+secret:
+//   * Device-authorization grant requires the OAuth client to be of type
+//     "TVs and Limited Input devices". rclone's well-known public client
+//     is type "Other" and Google rejects /device/code calls against it
+//     with `invalid_client`. We can't ship a centralized TV client
+//     because the consent screen would surface our project name to the
+//     user and we'd own their refresh tokens — neither is acceptable for
+//     a static GitHub Pages app. So the user spends ~5 minutes once to
+//     register their own OAuth client and gets full data sovereignty.
+//   * We ALSO send the same client_id + client_secret to the workflow
+//     (as GDRIVE_OAUTH_CLIENT_ID/_SECRET) because rclone in CI needs
+//     them to refresh the access token at runtime. Without those, the
+//     CI run would hit `invalid_client` 403 the moment the access token
+//     expires (~1 hour into a long upload).
+const DRIVE_DEVICE_AUTH_ENDPOINT = "https://oauth2.googleapis.com/device/code";
+const DRIVE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+const DRIVE_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+const DRIVE_OAUTH_SCOPE = "https://www.googleapis.com/auth/drive";
+
+// Per-flow state that the cancel button mutates so the polling loop knows
+// to bail. We keep it module-scoped (not closed-over) so a second click on
+// "Подключить" cleanly aborts whatever the previous click was waiting for.
+let _activeDeviceFlow = null;
+
+function setDriveConnectStatus(text, kind = "info") {
+  const el = $("#drive-connect-status");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className =
+    "text-xs " +
+    (text ? "" : "hidden ") +
+    (kind === "success"
+      ? "text-emerald-300"
+      : kind === "error"
+      ? "text-rose-300"
+      : "text-slate-400");
+  if (text) {
+    try {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch {
+      /* older browsers */
+    }
+  }
+}
+
+function _sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function _postOAuthForm(url, params) {
+  // Google's OAuth endpoints accept `application/x-www-form-urlencoded`
+  // bodies and respond with JSON. CORS is allowed from arbitrary origins
+  // (we verified `Access-Control-Allow-Origin: <origin>` on the response).
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(params),
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* Google returned a non-JSON body — treat data as null and rely on
+       res.status / res.statusText below to surface the failure. */
+  }
+  return { res, data };
+}
+
+let _deviceCountdownTimer = null;
+
+function _renderDeviceCountdown(expiresAt) {
+  const el = $("#drive-device-countdown");
+  if (!el) return;
+  const tick = () => {
+    const ms = expiresAt - Date.now();
+    if (ms <= 0) {
+      el.textContent = "Истёк";
+      if (_deviceCountdownTimer) {
+        clearInterval(_deviceCountdownTimer);
+        _deviceCountdownTimer = null;
+      }
+      return;
+    }
+    const sec = Math.ceil(ms / 1000);
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    el.textContent = `Истекает через ${m}:${String(s).padStart(2, "0")}`;
+  };
+  tick();
+  if (_deviceCountdownTimer) clearInterval(_deviceCountdownTimer);
+  _deviceCountdownTimer = setInterval(tick, 1000);
+}
+
+function _openDeviceModal({ userCode, verificationUrl, verificationUrlComplete, expiresAt }) {
+  const modal = $("#drive-device-modal");
+  if (!modal) return;
+  const codeEl = $("#drive-device-code");
+  if (codeEl) codeEl.textContent = userCode;
+  const linkEl = $("#drive-device-link");
+  if (linkEl) {
+    linkEl.href = verificationUrlComplete || verificationUrl;
+    // Show the human-readable URL even if we open the complete one.
+    linkEl.textContent = (verificationUrl || "google.com/device").replace(/^https?:\/\//, "");
+  }
+  const statusEl = $("#drive-device-status");
+  if (statusEl) statusEl.textContent = "Жду подтверждения в Google…";
+  // QR for users who want to scan from a phone — points at the URL with
+  // user_code prefilled so they don't have to type it on the phone.
+  const qr = $("#drive-device-qr");
+  if (qr) {
+    qr.src =
+      "https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=4&data=" +
+      encodeURIComponent(verificationUrlComplete || verificationUrl);
+  }
+  _renderDeviceCountdown(expiresAt);
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
+}
+
+function _closeDeviceModal() {
+  const modal = $("#drive-device-modal");
+  if (!modal) return;
+  modal.classList.add("hidden");
+  modal.classList.remove("flex");
+  if (_deviceCountdownTimer) {
+    clearInterval(_deviceCountdownTimer);
+    _deviceCountdownTimer = null;
+  }
+}
+
+async function startDriveDeviceFlow({ clientId, clientSecret }) {
+  // Step 1: ask Google for a device_code + a short user_code we can show.
+  const { res: deviceRes, data: device } = await _postOAuthForm(DRIVE_DEVICE_AUTH_ENDPOINT, {
+    client_id: clientId,
+    scope: DRIVE_OAUTH_SCOPE,
+  });
+  if (!deviceRes.ok || !device || !device.device_code) {
+    const errCode = device?.error || `HTTP ${deviceRes.status}`;
+    const errDesc = device?.error_description || "";
+    if (errCode === "invalid_client") {
+      throw new Error(
+        "Google: invalid_client. Скорее всего OAuth-клиент создан НЕ как «TVs and Limited Input devices». Удали его и создай заново правильного типа."
+      );
+    }
+    throw new Error(`Google: ${errCode}${errDesc ? ` — ${errDesc}` : ""}`);
+  }
+
+  const expiresAt = Date.now() + (Number(device.expires_in) || 1800) * 1000;
+  const verificationUrl = device.verification_url || "https://www.google.com/device";
+  const verificationUrlComplete =
+    device.verification_url_complete ||
+    `${verificationUrl}?user_code=${encodeURIComponent(device.user_code)}`;
+
+  _openDeviceModal({
+    userCode: device.user_code,
+    verificationUrl,
+    verificationUrlComplete,
+    expiresAt,
+  });
+
+  // Optionally pop open Google's verification page so the user doesn't
+  // have to copy/click. Some browsers block this when called after an
+  // `await`, but it's a nice-to-have — failure is silent and the link in
+  // the modal still works.
+  try {
+    window.open(verificationUrlComplete, "_blank", "noopener,noreferrer");
+  } catch {
+    /* popup blocked — modal already shows the link/QR */
+  }
+
+  // Step 2: poll /token until the user finishes consent or the code
+  // expires. Google asks us to obey the `interval` parameter (default 5s)
+  // and to back off another 5s on `slow_down`.
+  let interval = (Number(device.interval) || 5) * 1000;
+  const flow = { cancelled: false };
+  _activeDeviceFlow = flow;
+
+  try {
+    while (Date.now() < expiresAt) {
+      if (flow.cancelled) {
+        const err = new Error("Отменено пользователем");
+        err.cancelled = true;
+        throw err;
+      }
+      await _sleep(interval);
+      if (flow.cancelled) {
+        const err = new Error("Отменено пользователем");
+        err.cancelled = true;
+        throw err;
+      }
+      const { res: tokenRes, data: tokenData } = await _postOAuthForm(DRIVE_TOKEN_ENDPOINT, {
+        client_id: clientId,
+        client_secret: clientSecret,
+        device_code: device.device_code,
+        grant_type: DRIVE_DEVICE_GRANT,
+      });
+      if (tokenRes.ok && tokenData?.access_token && tokenData?.refresh_token) {
+        return tokenData;
+      }
+      const errCode = tokenData?.error;
+      if (errCode === "authorization_pending") continue;
+      if (errCode === "slow_down") {
+        interval += 5000;
+        continue;
+      }
+      if (errCode === "access_denied") {
+        throw new Error("Ты отклонил доступ в Google. Если это было случайно — нажми «Подключить» ещё раз.");
+      }
+      if (errCode === "expired_token") {
+        throw new Error("Код истёк. Нажми «Подключить» ещё раз — код выпустится новый.");
+      }
+      // Anything else (invalid_grant, invalid_client mid-flow, etc.) is
+      // unexpected and we should surface verbatim instead of looping.
+      throw new Error(
+        `Google: ${tokenData?.error_description || errCode || `HTTP ${tokenRes.status}`}`
+      );
+    }
+    throw new Error("Таймаут — код просрочен. Нажми «Подключить» ещё раз.");
+  } finally {
+    if (_activeDeviceFlow === flow) _activeDeviceFlow = null;
+  }
+}
+
+function bindDriveOAuthConnect() {
+  const btn = $("#drive-connect-btn");
+  const cidField = $("#drive-client-id");
+  const secField = $("#drive-client-secret");
+  const folderField = $("#drive-folder");
+  const cancelBtn = $("#drive-device-cancel");
+  if (!btn || !cidField || !secField || !folderField) return;
+
+  // Status line auto-clears on input so a stale red error from a typo
+  // doesn't linger after the user fixes the input.
+  const reset = () => {
+    if ($("#drive-connect-status")?.textContent) setDriveConnectStatus("");
+  };
+  cidField.addEventListener("input", reset);
+  secField.addEventListener("input", reset);
+  folderField.addEventListener("input", reset);
+
+  cancelBtn?.addEventListener("click", () => {
+    if (_activeDeviceFlow) _activeDeviceFlow.cancelled = true;
+    _closeDeviceModal();
+    setDriveConnectStatus("Отменено.");
+    btn.disabled = false;
+  });
+
+  // Esc / backdrop click also cancels.
+  const modal = $("#drive-device-modal");
+  modal?.addEventListener("click", (e) => {
+    if (e.target === modal) cancelBtn?.click();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && modal && !modal.classList.contains("hidden")) {
+      cancelBtn?.click();
+    }
+  });
+
+  btn.addEventListener("click", async () => {
+    setDriveConnectStatus("");
+    if (!cfg.repo) {
+      setDriveConnectStatus("Сначала укажи репозиторий в Настройках выше.", "error");
+      return;
+    }
+    if (!cfg.token) {
+      setDriveConnectStatus("Сначала введи GitHub-токен выше и нажми «Сохранить».", "error");
+      return;
+    }
+    const clientId = cidField.value.trim();
+    const clientSecret = secField.value.trim();
+    if (!clientId) {
+      setDriveConnectStatus("Не указан Client ID.", "error");
+      return;
+    }
+    if (!/\.apps\.googleusercontent\.com$/.test(clientId)) {
+      setDriveConnectStatus(
+        "Client ID должен заканчиваться на `.apps.googleusercontent.com`. Проверь, что скопировал именно ID, а не название проекта.",
+        "error"
+      );
+      return;
+    }
+    if (!clientSecret) {
+      setDriveConnectStatus("Не указан Client Secret.", "error");
+      return;
+    }
+
+    let folderId = null;
+    const folderRaw = folderField.value.trim();
+    if (folderRaw) {
+      folderId = extractFolderId(folderRaw);
+      if (!folderId) {
+        setDriveConnectStatus(
+          "Не похоже на ID папки Drive. Вставь URL вида https://drive.google.com/drive/folders/... или сам ID. Поле можно оставить пустым — файлы лягут в корень «Моего диска».",
+          "error"
+        );
+        return;
+      }
+    }
+
+    btn.disabled = true;
+    setDriveConnectStatus("Запрашиваю код у Google…");
+    let tokenData;
+    try {
+      tokenData = await startDriveDeviceFlow({ clientId, clientSecret });
+    } catch (err) {
+      _closeDeviceModal();
+      btn.disabled = false;
+      if (err.cancelled) return;
+      setDriveConnectStatus(`Ошибка: ${err.message || err}`, "error");
+      return;
+    }
+
+    _closeDeviceModal();
+    setDriveConnectStatus("Готово! Шифрую и сохраняю секреты в GitHub…");
+
+    // Build an rclone-format token JSON so the workflow's existing OAuth
+    // step (which feeds `token = …` straight into rclone.conf) keeps
+    // working unchanged. rclone only looks at refresh_token at runtime —
+    // access_token + expiry are advisory.
+    const rcloneToken = {
+      access_token: tokenData.access_token,
+      token_type: tokenData.token_type || "Bearer",
+      refresh_token: tokenData.refresh_token,
+      expiry: new Date(
+        Date.now() + (Number(tokenData.expires_in) || 3600) * 1000
+      ).toISOString(),
+    };
+
+    try {
+      const uploaded = [];
+      const v1 = await uploadGitHubSecret(
+        "GDRIVE_OAUTH_TOKEN",
+        JSON.stringify(rcloneToken)
+      );
+      uploaded.push(`GDRIVE_OAUTH_TOKEN (${formatSecretTs(v1)})`);
+      const v2 = await uploadGitHubSecret("GDRIVE_OAUTH_CLIENT_ID", clientId);
+      uploaded.push(`GDRIVE_OAUTH_CLIENT_ID (${formatSecretTs(v2)})`);
+      const v3 = await uploadGitHubSecret(
+        "GDRIVE_OAUTH_CLIENT_SECRET",
+        clientSecret
+      );
+      uploaded.push(`GDRIVE_OAUTH_CLIENT_SECRET (${formatSecretTs(v3)})`);
+      if (folderId) {
+        const v4 = await uploadGitHubSecret("GDRIVE_FOLDER_ID", folderId);
+        uploaded.push(`GDRIVE_FOLDER_ID (${formatSecretTs(v4)})`);
+      }
+      setDriveConnectStatus(
+        `Подключено. В GitHub Secrets записано: ${uploaded.join(
+          "; "
+        )}. Воркфлоу теперь будет писать в твой Google Drive.`,
+        "success"
+      );
+      toast("Google Drive подключён.", "success");
+      // Clear the secret field — the value is already saved, no reason to
+      // keep it in the DOM where a screenshot would expose it. Client ID
+      // and folder are not secret, leave them so the user can re-run.
+      secField.value = "";
+      try {
+        if (typeof SecretsAudit !== "undefined" && SecretsAudit) {
+          SecretsAudit.refresh();
+        }
+      } catch {
+        /* SecretsAudit not loaded yet — fine */
+      }
+    } catch (err) {
+      const msg = err.message || String(err);
+      const hint = /\b403\b/.test(msg)
+        ? " У PAT должно быть «Secrets: Read and Write». Перевыпусти токен с этим разрешением."
+        : "";
+      setDriveConnectStatus(`Ошибка записи в GitHub: ${msg}${hint}`, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 // ---------- YouTube cookies uploader ----------
 // YouTube hardened bot detection in 2025 — cloud IPs (incl. GitHub Actions
 // runners) get the "Sign in to confirm you're not a bot" wall on most
@@ -7256,6 +7642,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindClearUrl();
   bindDriveUpload();
   bindDriveOAuthUpload();
+  bindDriveOAuthConnect();
   bindYtCookiesUpload();
   bindCookieWizard();
   bindTrackersUpload();

@@ -206,35 +206,54 @@ jobs:
         if: steps.auth.outputs.mode == 'oauth'
         env:
           GDRIVE_OAUTH_TOKEN: ${{ secrets.GDRIVE_OAUTH_TOKEN }}
+          GDRIVE_OAUTH_CLIENT_ID: ${{ secrets.GDRIVE_OAUTH_CLIENT_ID }}
+          GDRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.GDRIVE_OAUTH_CLIENT_SECRET }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           set -euo pipefail
-          # OAuth path: the secret holds whatever `rclone authorize "drive"`
-          # printed out — a JSON blob like
+          # OAuth path: the secret holds either:
+          #   * The JSON `rclone authorize "drive"` prints — using rclone's
+          #     well-known public client. No client_id/secret needed in
+          #     rclone.conf, rclone falls back to its built-in defaults.
+          #   * The JSON our in-app device-code flow produces — using a
+          #     user-owned "TVs and Limited Input devices" OAuth client.
+          #     In that case GDRIVE_OAUTH_CLIENT_ID and _SECRET MUST be
+          #     present, otherwise rclone will try to refresh the access
+          #     token against its built-in client and Google will return
+          #     `invalid_client`.
+          # Either way the JSON looks like:
           #   {"access_token":"...","token_type":"Bearer",
           #    "refresh_token":"...","expiry":"..."}
-          # rclone keeps the refresh_token alive on its own so we don't have
-          # to do anything special in CI.
           mkdir -p "$HOME/.config/rclone"
           token_json="$GDRIVE_OAUTH_TOKEN"
           if ! printf '%s' "$token_json" | jq -e '.refresh_token' >/dev/null 2>&1; then
-            echo "::error::GDRIVE_OAUTH_TOKEN does not contain a refresh_token. Re-run \`rclone authorize \"drive\"\` and copy the full JSON object into the secret."
+            echo "::error::GDRIVE_OAUTH_TOKEN does not contain a refresh_token. Re-connect Drive in the app («Подключить Google Drive») or re-run \`rclone authorize \"drive\"\` and update the secret."
             exit 1
           fi
           {
             printf '%s\n' '[gdrive]'
             printf '%s\n' 'type = drive'
             printf '%s\n' 'scope = drive'
+            if [ -n "${GDRIVE_OAUTH_CLIENT_ID:-}" ]; then
+              printf 'client_id = %s\n' "$GDRIVE_OAUTH_CLIENT_ID"
+            fi
+            if [ -n "${GDRIVE_OAUTH_CLIENT_SECRET:-}" ]; then
+              printf 'client_secret = %s\n' "$GDRIVE_OAUTH_CLIENT_SECRET"
+            fi
             printf 'token = %s\n' "$token_json"
             if [ -n "${GDRIVE_FOLDER_ID:-}" ]; then
               printf 'root_folder_id = %s\n' "$GDRIVE_FOLDER_ID"
             fi
           } > "$HOME/.config/rclone/rclone.conf"
           chmod 600 "$HOME/.config/rclone/rclone.conf"
-          echo "Drive auth: OAuth refresh token (writes count against your personal quota)"
+          if [ -n "${GDRIVE_OAUTH_CLIENT_ID:-}" ]; then
+            echo "Drive auth: OAuth (custom client, in-app device flow). Writes count against your personal quota."
+          else
+            echo "Drive auth: OAuth (rclone built-in client). Writes count against your personal quota."
+          fi
           rclone --config "$HOME/.config/rclone/rclone.conf" about gdrive: 2>/dev/null | sed -n '1,8p' || true
           rclone --config "$HOME/.config/rclone/rclone.conf" lsd gdrive: >/dev/null || {
-            echo "::error::rclone could not list the target Drive folder. The refresh token may have been revoked or the folder ID is wrong. Re-run \`rclone authorize \"drive\"\` and update GDRIVE_OAUTH_TOKEN."
+            echo "::error::rclone could not list the target Drive folder. The refresh token may have been revoked or the folder ID is wrong. Re-connect Drive in the app («Подключить Google Drive») to refresh the token."
             exit 1
           }
 
