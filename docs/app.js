@@ -779,10 +779,14 @@ function openSettings() {
 // though it's already on GitHub. Surface that state explicitly so they can
 // stop second-guessing themselves.
 function renderDriveExistingState(audit) {
-  if (!audit || !audit.ready || !Array.isArray(audit.rows)) return;
+  if (!audit || !audit.ready || !Array.isArray(audit.rows)) {
+    applyDriveUploadButtonState();
+    return;
+  }
   const jsonField = $("#drive-json");
   const folderField = $("#drive-folder");
   if (!jsonField || !folderField) return;
+  applyDriveUploadButtonState();
   // Only show the hint when both fields are blank — once the user starts
   // typing, get out of the way.
   if (jsonField.value.trim() || folderField.value.trim()) return;
@@ -796,6 +800,54 @@ function renderDriveExistingState(audit) {
       : "На GitHub · значения скрыты GitHub'ом. Заново загружать не нужно.",
     "success"
   );
+}
+
+// Lock the «Загрузить в GitHub Secrets» button when both Drive secrets
+// already live in GitHub and the form is empty — pressing it in that
+// state would either fail with «Заполни хотя бы одно поле» or, worse,
+// silently re-write the existing secret with placeholder content. Once
+// the user starts typing, the button comes back relabelled
+// «Перезаписать на GitHub» so the overwrite is intentional.
+function applyDriveUploadButtonState() {
+  const btn = $("#drive-upload");
+  const jsonField = $("#drive-json");
+  const folderField = $("#drive-folder");
+  if (!btn || !jsonField || !folderField) return;
+  const defaultLabel =
+    btn.dataset.defaultLabel || "Загрузить в GitHub Secrets";
+  const hasInput = !!(
+    jsonField.value.trim() || folderField.value.trim()
+  );
+  let saExists = false;
+  let folderExists = false;
+  try {
+    const audit =
+      typeof SecretsAudit !== "undefined" && SecretsAudit
+        ? SecretsAudit.lastResult()
+        : null;
+    if (audit && audit.ready && Array.isArray(audit.rows)) {
+      saExists = !!audit.rows.find(
+        (r) => r.name === "GDRIVE_SERVICE_ACCOUNT" && r.exists
+      );
+      folderExists = !!audit.rows.find(
+        (r) => r.name === "GDRIVE_FOLDER_ID" && r.exists
+      );
+    }
+  } catch {
+    /* ignore — fall through to default state */
+  }
+  const bothOnGitHub = saExists && folderExists;
+  if (bothOnGitHub && !hasInput) {
+    btn.disabled = true;
+    btn.textContent = "Уже на GitHub";
+    btn.title =
+      "Секреты уже лежат в GitHub. Чтобы перезаписать — введи новые значения в поля выше.";
+    return;
+  }
+  btn.disabled = false;
+  btn.title = "";
+  btn.textContent =
+    bothOnGitHub && hasInput ? "Перезаписать на GitHub" : defaultLabel;
 }
 
 function closeSettings() {
@@ -1244,7 +1296,11 @@ function bindDriveUpload() {
   const fileInput = $("#drive-json-file");
   const filePicker = $("#drive-json-pick");
 
-  jsonField.addEventListener("input", updateServiceAccountEmail);
+  jsonField.addEventListener("input", () => {
+    updateServiceAccountEmail();
+    applyDriveUploadButtonState();
+  });
+  folderField.addEventListener("input", applyDriveUploadButtonState);
 
   filePicker.addEventListener("click", (e) => {
     e.preventDefault();
@@ -1256,10 +1312,13 @@ function bindDriveUpload() {
     try {
       jsonField.value = await file.text();
       updateServiceAccountEmail();
+      applyDriveUploadButtonState();
     } catch (err) {
       setDriveStatus(`Не удалось прочитать файл: ${err.message || err}`, "error");
     }
   });
+
+  applyDriveUploadButtonState();
 
   btn.addEventListener("click", async () => {
     setDriveStatus("");
@@ -4300,6 +4359,24 @@ const SecretsAudit = (() => {
       return null;
     }
     render(result);
+    // Once we know which secrets already exist on GitHub, the Drive
+    // uploader can lock its button to prevent accidental duplicate
+    // writes (and surface "Перезаписать на GitHub" if the user typed
+    // something).
+    if (typeof applyDriveUploadButtonState === "function") {
+      try {
+        applyDriveUploadButtonState();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (typeof renderDriveExistingState === "function") {
+      try {
+        renderDriveExistingState(result);
+      } catch {
+        /* ignore */
+      }
+    }
     if (!result.ready) {
       setStatus(result.reason || "", "error");
       return result;
