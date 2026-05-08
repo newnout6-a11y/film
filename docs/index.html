@@ -20,19 +20,19 @@
     <meta name="application-name" content="Film Beamer" />
     <meta name="format-detection" content="telephone=no" />
 
-    <link rel="manifest" href="./manifest.webmanifest?v=29" />
+    <link rel="manifest" href="./manifest.webmanifest?v=30" />
     <link rel="icon" type="image/svg+xml" href="./icon.svg" />
     <link rel="apple-touch-icon" href="./icon.svg" />
     <!-- Pre-compiled Tailwind bundle (23 KB minified) replaces the 350 KB
          Tailwind Play CDN script. The config lives at /tailwind.config.js
          and the build is in scripts/build_tailwind.sh. -->
-    <link rel="preload" href="./tailwind.css?v=29" as="style" />
-    <link rel="preload" href="./style.css?v=29" as="style" />
-    <link rel="preload" href="./app.js?v=29" as="script" />
+    <link rel="preload" href="./tailwind.css?v=30" as="style" />
+    <link rel="preload" href="./style.css?v=30" as="style" />
+    <link rel="preload" href="./app.js?v=30" as="script" />
     <link rel="dns-prefetch" href="https://api.github.com" />
     <link rel="preconnect" href="https://api.github.com" crossorigin />
-    <link rel="stylesheet" href="./tailwind.css?v=29" />
-    <link rel="stylesheet" href="./style.css?v=29" />
+    <link rel="stylesheet" href="./tailwind.css?v=30" />
+    <link rel="stylesheet" href="./style.css?v=30" />
   </head>
   <body class="min-h-screen bg-ink-950 text-slate-100 antialiased font-sans selection:bg-accent-500/30">
     <div class="bg-grid pointer-events-none fixed inset-0 -z-10"></div>
@@ -604,21 +604,72 @@
           </div>
         </details>
 
-        <details class="mt-3 rounded-xl border border-white/10 bg-ink-900/60 p-4">
+        <details class="mt-3 rounded-xl border border-white/10 bg-ink-900/60 p-4" open>
           <summary class="cursor-pointer select-none text-sm font-medium text-slate-200">
-            Загрузить ключ Google Drive
+            Подключить Google Drive
             <span class="ml-1 block text-xs font-normal text-slate-500">
-              Зашифрует JSON в браузере и положит в GitHub Secrets — без захода на github.com.
+              Личный @gmail.com → жми «Подключить» и подтверди доступ в Google. Файлы будут лежать в твоём Drive (бесплатно 15 ГБ).
             </span>
           </summary>
           <div class="mt-3 space-y-3">
             <p class="text-xs text-slate-400">
+              Сначала нажми «Сохранить» в Настройках выше (репо + GitHub-токен) — без них кнопке некуда писать секреты.
               Шифрование: libsodium sealed box (то же, что использует GitHub).
-              Сначала нажми «Сохранить» выше — в загрузчике используются репо и токен из настроек.
             </p>
 
+            <details class="rounded-lg border border-white/10 bg-ink-900/40 p-3" open>
+              <summary class="cursor-pointer select-none text-xs font-medium text-slate-300">
+                Шаг 1. Создать OAuth-клиент Google (5 мин, один раз)
+                <span class="ml-1 block text-[11px] font-normal text-slate-500">
+                  Только в браузере. Без терминала, без rclone.
+                </span>
+              </summary>
+              <ol class="mt-2 list-decimal space-y-1.5 pl-5 text-[11px] text-slate-300">
+                <li>
+                  <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noreferrer noopener" class="underline decoration-dotted underline-offset-2 hover:text-slate-100">Создай проект Google Cloud</a> (имя любое, например «film»). Бесплатно, кредитка не нужна.
+                </li>
+                <li>
+                  Включи <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noreferrer noopener" class="underline decoration-dotted underline-offset-2 hover:text-slate-100">Google Drive API</a> — кнопка «Enable».
+                </li>
+                <li>
+                  Открой <a href="https://console.cloud.google.com/auth/branding" target="_blank" rel="noreferrer noopener" class="underline decoration-dotted underline-offset-2 hover:text-slate-100">OAuth consent screen</a> → Get started → User Type «External» → впиши имя приложения «film», support email = твой email → Save and Continue. На вкладке <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noreferrer noopener" class="underline decoration-dotted underline-offset-2 hover:text-slate-100">Audience → Test users</a> добавь свой Google-аккаунт (тот, в чей Drive хочешь писать).
+                </li>
+                <li>
+                  Открой <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer noopener" class="underline decoration-dotted underline-offset-2 hover:text-slate-100">Credentials</a> → «Create credentials» → «OAuth client ID» → Application type: <strong>TVs and Limited Input devices</strong>. Имя любое. Скопируй <em>Client ID</em> и <em>Client secret</em>.
+                </li>
+                <li>
+                  Вставь их ниже и жми «Подключить Google Drive».
+                </li>
+              </ol>
+            </details>
+
             <label class="block">
-              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Папка Drive (URL или ID, опционально)</span>
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">OAuth Client ID</span>
+              <input
+                id="drive-client-id"
+                type="text"
+                autocomplete="off"
+                placeholder="123456789012-abc….apps.googleusercontent.com"
+                class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 font-mono text-xs focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              />
+            </label>
+
+            <label class="block">
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">OAuth Client Secret</span>
+              <input
+                id="drive-client-secret"
+                type="password"
+                autocomplete="off"
+                placeholder="GOCSPX-…"
+                class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 font-mono text-xs focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              />
+              <span class="mt-1 block text-xs text-slate-500">
+                Пишутся в секреты <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">GDRIVE_OAUTH_CLIENT_ID</code> и <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">GDRIVE_OAUTH_CLIENT_SECRET</code>. Эти же значения нужны воркфлоу для авто-обновления access-токена.
+              </span>
+            </label>
+
+            <label class="block">
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Папка Drive (опционально)</span>
               <input
                 id="drive-folder"
                 type="text"
@@ -626,52 +677,62 @@
                 class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
               />
               <span class="mt-1 block text-xs text-slate-500">
-                Пишется в секрет <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">GDRIVE_FOLDER_ID</code>. В OAuth-режиме можно оставить пустым — файлы лягут в корень твоего «Моего диска».
-              </span>
-            </label>
-
-            <div class="rounded-lg border border-emerald-300/30 bg-emerald-500/10 p-3 text-xs text-emerald-100">
-              <p class="font-semibold">OAuth refresh token — рекомендуется для личных @gmail.com.</p>
-              <p class="mt-1">
-                Воркфлоу будет писать в Drive от твоего имени и расходовать твою личную квоту (15 ГБ бесплатно). Service Account на личном Google не работает — он требует Shared Drive, а Shared Drive есть только в Workspace.
-              </p>
-              <p class="mt-2">Как получить токен (один раз):</p>
-              <ol class="mt-1 list-decimal space-y-0.5 pl-5">
-                <li>На любом ПК с браузером поставь <a class="underline decoration-dotted underline-offset-2 hover:text-emerald-50" href="https://rclone.org/install/" target="_blank" rel="noreferrer noopener">rclone</a> (Linux/macOS: <code class="rounded bg-ink-900/40 px-1 text-[11px]">curl https://rclone.org/install.sh | sudo bash</code>; Windows: <code class="rounded bg-ink-900/40 px-1 text-[11px]">winget install Rclone.Rclone</code>; Android: пакет <code class="rounded bg-ink-900/40 px-1 text-[11px]">rclone</code> в Termux).</li>
-                <li>В терминале выполни <code class="rounded bg-ink-900/40 px-1 text-[11px]">rclone authorize "drive"</code>. Откроется браузер, авторизуйся под нужным Google-аккаунтом и подтверди доступ.</li>
-                <li>rclone напечатает строку с JSON вида <code class="rounded bg-ink-900/40 px-1 text-[11px]">{"access_token":"…","refresh_token":"…",…}</code> — скопируй её целиком (обе фигурные скобки) и вставь ниже.</li>
-              </ol>
-            </div>
-
-            <label class="block">
-              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">OAuth refresh token (JSON от rclone)</span>
-              <textarea
-                id="drive-oauth-token"
-                rows="3"
-                placeholder='{"access_token":"…","token_type":"Bearer","refresh_token":"…","expiry":"…"}'
-                class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 font-mono text-xs focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
-              ></textarea>
-              <span class="mt-1 block text-xs text-slate-500">
-                Пишется в секрет <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">GDRIVE_OAUTH_TOKEN</code>. Шифруется в браузере sealed box и кладётся прямо в GitHub Secrets — без захода на github.com.
+                Можно оставить пустым — файлы лягут в корень «Моего диска». Пишется в <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">GDRIVE_FOLDER_ID</code>.
               </span>
             </label>
 
             <button
-              id="drive-oauth-upload"
+              id="drive-connect-btn"
               type="button"
               class="w-full whitespace-nowrap rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60"
-              data-default-label="Сохранить OAuth-токен в GitHub Secrets"
+              data-default-label="Подключить Google Drive"
             >
-              Сохранить OAuth-токен в GitHub Secrets
+              Подключить Google Drive
             </button>
 
-            <p id="drive-oauth-status" class="hidden text-xs"></p>
+            <p id="drive-connect-status" class="hidden text-xs"></p>
 
-            <details class="mt-2 rounded-lg border border-white/10 bg-ink-900/40 p-3">
+            <details class="rounded-lg border border-white/10 bg-ink-900/40 p-3">
+              <summary class="cursor-pointer select-none text-xs font-medium text-slate-300">
+                Альтернатива — JSON от <code class="rounded bg-ink-900 px-1 text-[10px] text-slate-400">rclone authorize</code>
+                <span class="ml-1 block text-[11px] font-normal text-slate-500">
+                  Если уже есть готовый refresh-token от rclone — вставь, OAuth-клиент создавать не надо.
+                </span>
+              </summary>
+              <div class="mt-3 space-y-3">
+                <ol class="list-decimal space-y-0.5 pl-5 text-[11px] text-slate-400">
+                  <li>На любом ПК с rclone выполни <code class="rounded bg-ink-900/40 px-1 text-[10px]">rclone authorize "drive"</code>.</li>
+                  <li>Скопируй JSON и вставь ниже.</li>
+                </ol>
+
+                <label class="block">
+                  <span class="text-xs font-medium uppercase tracking-wider text-slate-400">OAuth refresh token (JSON)</span>
+                  <textarea
+                    id="drive-oauth-token"
+                    rows="3"
+                    placeholder='{"access_token":"…","refresh_token":"…",…}'
+                    class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 font-mono text-xs focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+                  ></textarea>
+                </label>
+
+                <button
+                  id="drive-oauth-upload"
+                  type="button"
+                  class="w-full whitespace-nowrap rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                  data-default-label="Сохранить токен от rclone"
+                >
+                  Сохранить токен от rclone
+                </button>
+
+                <p id="drive-oauth-status" class="hidden text-xs"></p>
+              </div>
+            </details>
+
+            <details class="rounded-lg border border-white/10 bg-ink-900/40 p-3">
               <summary class="cursor-pointer select-none text-xs font-medium text-slate-300">
                 Service Account (только для Google Workspace + Shared Drive)
                 <span class="ml-1 block text-[11px] font-normal text-slate-500">
-                  На личном @gmail.com работать не будет — у SA нет своей квоты, а Shared Drive создаётся только в Workspace. Используй OAuth выше.
+                  На личном @gmail.com работать не будет — у SA нет своей квоты, а Shared Drive создаётся только в Workspace.
                 </span>
               </summary>
               <div class="mt-3 space-y-3">
@@ -1619,6 +1680,79 @@
       </div>
     </div>
 
+    <!-- Drive OAuth device-code modal -->
+    <!--
+      Shown by bindDriveOAuthConnect() during the Google device-authorization
+      flow: the user sees a short user_code and a link to google.com/device,
+      the page polls /token in the background until Google reports the user
+      pressed Allow. We pre-bake the markup here (instead of injecting from
+      JS) so it lands in the Tailwind build without needing safelisted
+      classes.
+    -->
+    <div
+      id="drive-device-modal"
+      class="fixed inset-0 z-50 hidden items-center justify-center bg-ink-950/80 p-4 backdrop-blur"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="drive-device-title"
+    >
+      <div class="w-full max-w-md rounded-2xl border border-white/10 bg-ink-900 p-6 shadow-2xl">
+        <h3 id="drive-device-title" class="text-base font-semibold text-slate-100">
+          Подтверди в Google
+        </h3>
+        <p class="mt-1 text-xs text-slate-400">
+          Открыли вкладку с Google? Войди под нужным аккаунтом и нажми «Разрешить».
+          Если вкладка не открылась — открой ссылку ниже вручную (или отсканируй QR с телефона).
+        </p>
+
+        <div class="mt-4 flex items-start gap-4">
+          <img
+            id="drive-device-qr"
+            alt="QR-код для google.com/device"
+            class="h-32 w-32 shrink-0 rounded-md bg-white p-1"
+          />
+          <div class="min-w-0 flex-1 space-y-2">
+            <div>
+              <p class="text-[11px] uppercase tracking-wider text-slate-500">Введи код:</p>
+              <code
+                id="drive-device-code"
+                class="mt-1 block select-all rounded-lg border border-white/10 bg-ink-800 px-3 py-2 text-center font-mono text-lg tracking-widest text-emerald-300"
+              >
+                …
+              </code>
+            </div>
+            <div>
+              <p class="text-[11px] uppercase tracking-wider text-slate-500">На странице:</p>
+              <a
+                id="drive-device-link"
+                href="https://www.google.com/device"
+                target="_blank"
+                rel="noreferrer noopener"
+                class="break-all text-xs text-accent-400 underline decoration-dotted underline-offset-2 hover:text-accent-300"
+              >
+                google.com/device
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 flex items-center justify-between text-xs text-slate-400">
+          <span id="drive-device-status">Жду подтверждения в Google…</span>
+          <span id="drive-device-countdown" class="font-mono"></span>
+        </div>
+
+        <div class="mt-4 flex justify-end gap-2">
+          <button
+            id="drive-device-cancel"
+            type="button"
+            class="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+          >
+            Отменить
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Toasts -->
     <div
       id="toasts"
@@ -1626,7 +1760,7 @@
       style="bottom: max(env(safe-area-inset-bottom), 1.5rem);"
     ></div>
 
-    <script src="./app.js?v=29"></script>
+    <script src="./app.js?v=30"></script>
     <script>
       // Service worker registration is handled inside app.js (registerServiceWorker)
       // so the page can detect updates and show the banner. We keep this stub
