@@ -254,6 +254,89 @@ textarea {
   to   { transform: rotate(360deg); }
 }
 
+/* On the white theme the dark-only colours above leave the step
+   labels practically invisible (#e2e8f0 on #ffffff). Re-state them
+   explicitly so the dialog stays readable in both themes. */
+html.theme-light .stage-row {
+  background: rgba(15, 23, 42, 0.04);
+  border-color: rgba(15, 23, 42, 0.1);
+}
+html.theme-light .stage-row.in_progress {
+  background: rgba(124, 92, 255, 0.12);
+  border-color: rgba(124, 92, 255, 0.4);
+}
+html.theme-light .stage-row.success {
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(22, 163, 74, 0.35);
+}
+html.theme-light .stage-row.failure {
+  background: rgba(244, 63, 94, 0.14);
+  border-color: rgba(225, 29, 72, 0.35);
+}
+html.theme-light .stage-row .stage-name {
+  color: #0f172a;
+}
+html.theme-light .stage-row .stage-sub,
+html.theme-light .stage-row .stage-tail {
+  color: #475569;
+}
+html.theme-light .stage-row .stage-icon.text-slate-500 {
+  color: #475569 !important;
+}
+html.theme-light .stage-row .stage-icon.text-emerald-300 {
+  color: #047857 !important;
+}
+html.theme-light .stage-row .stage-icon.text-rose-300 {
+  color: #be123c !important;
+}
+html.theme-light .stage-row .stage-icon.text-accent-300 {
+  color: #5b3df0 !important;
+}
+
+/* «Свернуть» on the progress dialog now leaves a sticky restore pill
+   instead of vanishing the run entirely. Same gradient as the dispatch
+   button so the eye picks it up immediately. */
+#progress-restore {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #7c5cff, #d946ef);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 14px 32px -10px rgba(124, 92, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+#progress-restore.visible {
+  display: inline-flex;
+}
+#progress-restore:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 36px -10px rgba(124, 92, 255, 0.65);
+}
+#progress-restore .pill-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #ffffff;
+  animation: spin 0.9s linear infinite;
+}
+html.theme-light #progress-restore {
+  /* Keep the gradient — it works on both backgrounds — but soften the
+     ring so it doesn't punch through on bright pages. */
+  border-color: rgba(91, 61, 240, 0.25);
+  box-shadow: 0 14px 32px -10px rgba(91, 61, 240, 0.45);
+}
+
 /* ---------- Diagnostics dialog ---------- */
 #diag-dialog code {
   font-size: 11px;

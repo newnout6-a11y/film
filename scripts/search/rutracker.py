@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 # Make ``common`` importable when invoked directly via ``python scripts/.../...py``.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import (  # noqa: E402
+    cookies_from_env,
     env,
     log,
     parse_int,
@@ -59,12 +60,40 @@ def login(session: requests.Session, username: str, password: str) -> bool:
     return False
 
 
+def is_logged_in(session: requests.Session) -> bool:
+    """RuTracker rejects unauthenticated tracker.php requests with a redirect
+    to /login.php. We probe the index once before searching to avoid wasting
+    a search on a stale cookie jar."""
+    try:
+        r = session.get(f"{BASE}/index.php", timeout=15, allow_redirects=False)
+    except Exception as e:  # noqa: BLE001
+        log(f"rutracker: index probe error: {e}")
+        return False
+    # Logged-out users get bounced to login.php (302). Logged-in users get
+    # 200 with the welcome string in cp1251.
+    if r.status_code in (301, 302) and "login.php" in (r.headers.get("Location") or ""):
+        return False
+    return r.status_code == 200
+
+
 def parse_search(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "lxml")
-    rows = soup.select("tr.hl-tr") or soup.select("tr.tCenter")
+    # The 2024+ tracker.php template uses <tr class="tCenter hl-tr">; older
+    # search responses still use plain hl-tr or tCenter. Try the broadest
+    # forum-row selector first and fall back through the historical ones.
+    rows = (
+        soup.select("tr.tCenter.hl-tr")
+        or soup.select("tr.hl-tr")
+        or soup.select("tr.tCenter")
+        or soup.select("table#tor-tbl tbody tr")
+    )
     out: list[dict] = []
     for row in rows:
-        title_a = row.select_one("a.tLink") or row.select_one("a.tlink")
+        title_a = (
+            row.select_one("a.tLink")
+            or row.select_one("a.tlink")
+            or row.select_one('a[href*="viewtopic.php?t="]')
+        )
         if not title_a:
             continue
         href = title_a.get("href") or ""
@@ -145,18 +174,39 @@ def main() -> int:
     query = env("QUERY")
     user = env("RUTRACKER_USERNAME")
     pwd = env("RUTRACKER_PASSWORD")
+    cookies = cookies_from_env("RUTRACKER_COOKIES")
     if not query:
         log("rutracker: empty query, skipping")
         write_results(TRACKER_SLUG, [])
         return 0
-    if not user or not pwd:
-        log("rutracker: no credentials, skipping (set RUTRACKER_USERNAME / RUTRACKER_PASSWORD in repo secrets)")
+    if not (user and pwd) and not cookies:
+        log(
+            "rutracker: no credentials, skipping (set RUTRACKER_USERNAME / "
+            "RUTRACKER_PASSWORD or paste a Netscape RUTRACKER_COOKIES blob)"
+        )
         write_results(TRACKER_SLUG, [])
         return 0
 
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
-    if not login(session, user, pwd):
+    # Cookie-jar path takes precedence: it works even on accounts with 2FA
+    # / captcha, where the cp1251 login form silently fails. We still keep
+    # username/password as a fallback so the env config matches what the
+    # UI uploads.
+    authed = False
+    if cookies:
+        for k, v in cookies.items():
+            session.cookies.set(k, v, domain=".rutracker.org")
+        if is_logged_in(session):
+            log(f"rutracker: authenticated via RUTRACKER_COOKIES ({len(cookies)} cookies)")
+            authed = True
+        else:
+            log("rutracker: cookies present but session probe failed; trying login.php")
+    if not authed and user and pwd:
+        if login(session, user, pwd):
+            authed = True
+    if not authed:
+        log("rutracker: not authenticated, skipping")
         write_results(TRACKER_SLUG, [])
         return 0
 

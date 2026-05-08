@@ -761,9 +761,41 @@ function openSettings() {
   if (typeof SecretsAudit !== "undefined" && SecretsAudit && SecretsAudit.refresh) {
     // Render whatever we have cached first so the panel doesn't flash empty.
     const last = SecretsAudit.lastResult();
-    if (last) SecretsAudit.render(last);
-    SecretsAudit.refresh({ silent: true, force: false }).catch(() => {});
+    if (last) {
+      SecretsAudit.render(last);
+      renderDriveExistingState(last);
+    }
+    SecretsAudit.refresh({ silent: true, force: false })
+      .then((res) => {
+        if (res) renderDriveExistingState(res);
+      })
+      .catch(() => {});
   }
+}
+
+// When the user opens Settings on a hard-reloaded device, the Drive form is
+// empty (we never persist the SA JSON to the Drive sync blob — it IS the
+// account key). Without this nudge, they re-paste the JSON every time even
+// though it's already on GitHub. Surface that state explicitly so they can
+// stop second-guessing themselves.
+function renderDriveExistingState(audit) {
+  if (!audit || !audit.ready || !Array.isArray(audit.rows)) return;
+  const jsonField = $("#drive-json");
+  const folderField = $("#drive-folder");
+  if (!jsonField || !folderField) return;
+  // Only show the hint when both fields are blank — once the user starts
+  // typing, get out of the way.
+  if (jsonField.value.trim() || folderField.value.trim()) return;
+  const sa = audit.rows.find((r) => r.name === "GDRIVE_SERVICE_ACCOUNT");
+  const folder = audit.rows.find((r) => r.name === "GDRIVE_FOLDER_ID");
+  if (!sa || !folder || !sa.exists || !folder.exists) return;
+  const ago = sa.updatedAt ? timeAgo(sa.updatedAt) : "";
+  setDriveStatus(
+    ago
+      ? `На GitHub · обновлено ${ago}. Заново загружать не нужно — поля можно оставить пустыми.`
+      : "На GitHub · значения скрыты GitHub'ом. Заново загружать не нужно.",
+    "success"
+  );
 }
 
 function closeSettings() {
@@ -2864,6 +2896,7 @@ let _trackEpoch = 0;
 function openProgressDialog(title) {
   const dlg = $("#progress-dialog");
   if (!dlg) return;
+  hideRestorePill();
   $("#progress-title").textContent = title || "Запуск раннера…";
   $("#progress-subtitle").textContent =
     "Ждём, пока GitHub зарегистрирует запуск…";
@@ -2886,10 +2919,42 @@ function openProgressDialog(title) {
   startProgressMetaTicker();
 }
 
+// «Свернуть» on the dialog used to call closeProgressDialog() outright,
+// which also stopped the meta ticker and zeroed _progressActive — the run
+// vanished from the user's view with no way to bring it back. Now we have
+// two states: the modal can be `hidden` while `_progressActive` is still
+// true, in which case a fixed restore pill at the bottom-right keeps the
+// run reachable until it actually completes.
+function showRestorePill() {
+  const pill = $("#progress-restore");
+  if (pill) pill.classList.add("visible");
+}
+function hideRestorePill() {
+  const pill = $("#progress-restore");
+  if (pill) pill.classList.remove("visible");
+}
+
+function hideProgressDialog() {
+  const dlg = $("#progress-dialog");
+  if (!dlg) return;
+  dlg.classList.add("hidden");
+  // Keep _progressActive + the meta ticker running so the elapsed clock
+  // doesn't reset when the user re-opens the panel.
+  if (_progressActive) showRestorePill();
+}
+
+function reopenProgressDialog() {
+  const dlg = $("#progress-dialog");
+  if (!dlg) return;
+  dlg.classList.remove("hidden");
+  hideRestorePill();
+}
+
 function closeProgressDialog() {
   const dlg = $("#progress-dialog");
   if (!dlg) return;
   dlg.classList.add("hidden");
+  hideRestorePill();
   _progressActive = false;
   stopProgressMetaTicker();
 }
@@ -2900,10 +2965,15 @@ function bindProgressDialog() {
   const closeBtn = $("#progress-close");
   if (closeBtn) closeBtn.addEventListener("click", closeProgressDialog);
   const hideBtn = $("#progress-hide");
-  if (hideBtn) hideBtn.addEventListener("click", closeProgressDialog);
+  // Minimise = hide the modal but keep the run reachable via the pill.
+  if (hideBtn) hideBtn.addEventListener("click", hideProgressDialog);
   dlg.addEventListener("click", (e) => {
-    if (e.target.id === "progress-dialog") closeProgressDialog();
+    // Backdrop tap is treated as «свернуть», not «закрыть» — the user is
+    // probably trying to look at the page while the runner spins.
+    if (e.target.id === "progress-dialog") hideProgressDialog();
   });
+  const pill = $("#progress-restore");
+  if (pill) pill.addEventListener("click", reopenProgressDialog);
 }
 
 // Drives the "Длительность" / "Текущий шаг" mini-card in the dialog so
@@ -3669,6 +3739,34 @@ const Diagnostics = (() => {
   async function checkDrive() {
     setRow("#diag-drive", "пробую…", "pending");
     if (!cfg.driveSaJson || !cfg.driveFolderId) {
+      // Local form is empty — but the user may have already uploaded the
+      // secret to GitHub on a previous session, then cleared localStorage
+      // (or hard-reloaded). Consult SecretsAudit so this row reads
+      // «На GitHub · 16 ч назад» instead of nudging the user to re-paste
+      // their service-account JSON for no reason.
+      let audit = null;
+      try {
+        if (typeof SecretsAudit !== "undefined" && SecretsAudit) {
+          audit = SecretsAudit.lastResult() || (await SecretsAudit.audit({ force: false }));
+        }
+      } catch {
+        audit = null;
+      }
+      if (audit && audit.ready && Array.isArray(audit.rows)) {
+        const sa = audit.rows.find((r) => r.name === "GDRIVE_SERVICE_ACCOUNT");
+        const folder = audit.rows.find((r) => r.name === "GDRIVE_FOLDER_ID");
+        if (sa && sa.exists && folder && folder.exists) {
+          const ago = sa.updatedAt ? timeAgo(sa.updatedAt) : "";
+          setRow(
+            "#diag-drive",
+            ago
+              ? `На GitHub · обновлён ${ago}`
+              : "На GitHub · значения скрыты",
+            "ok"
+          );
+          return;
+        }
+      }
       setRow("#diag-drive", "SA + Folder не задан", "warn");
       return;
     }
@@ -4475,7 +4573,9 @@ function bindKeyboardShortcuts() {
       }
       const pd = $("#progress-dialog");
       if (pd && !pd.classList.contains("hidden")) {
-        closeProgressDialog();
+        // Esc on the modal collapses to the restore pill — same as «Свернуть»
+        // — so a stray keypress doesn't hide the in-flight run entirely.
+        hideProgressDialog();
       }
       const dd = $("#diag-dialog");
       if (dd && !dd.classList.contains("hidden")) {

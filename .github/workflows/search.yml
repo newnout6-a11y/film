@@ -48,6 +48,9 @@ jobs:
           QUERY: ${{ inputs.query }}
           RUTRACKER_USERNAME: ${{ secrets.RUTRACKER_USERNAME }}
           RUTRACKER_PASSWORD: ${{ secrets.RUTRACKER_PASSWORD }}
+          # Optional cookies.txt fallback for accounts with 2FA / captcha
+          # where login.php POST silently fails.
+          RUTRACKER_COOKIES: ${{ secrets.RUTRACKER_COOKIES }}
         run: python scripts/search/rutracker.py
 
       - name: Search Kinozal
@@ -57,6 +60,7 @@ jobs:
           QUERY: ${{ inputs.query }}
           KINOZAL_USERNAME: ${{ secrets.KINOZAL_USERNAME }}
           KINOZAL_PASSWORD: ${{ secrets.KINOZAL_PASSWORD }}
+          KINOZAL_COOKIES: ${{ secrets.KINOZAL_COOKIES }}
         run: python scripts/search/kinozal.py
 
       - name: Search NNM-Club
@@ -66,6 +70,7 @@ jobs:
           QUERY: ${{ inputs.query }}
           NNM_USERNAME: ${{ secrets.NNM_USERNAME }}
           NNM_PASSWORD: ${{ secrets.NNM_PASSWORD }}
+          NNM_COOKIES: ${{ secrets.NNM_COOKIES }}
         run: python scripts/search/nnmclub.py
 
       - name: Aggregate results

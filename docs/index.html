@@ -1123,6 +1123,18 @@
       </div>
     </div>
 
+    <!-- Restore pill: appears when the user minimises the progress dialog
+         while a run is still in flight, so they can re-open it. -->
+    <button
+      id="progress-restore"
+      type="button"
+      aria-label="Открыть прогресс закидывания"
+      title="Открыть прогресс закидывания"
+    >
+      <span class="pill-spinner" aria-hidden="true"></span>
+      <span id="progress-restore-label">Идёт закидывание — раскрыть</span>
+    </button>
+
     <!-- Diagnostics dialog -->
     <div
       id="diag-dialog"
