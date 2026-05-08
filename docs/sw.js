@@ -24,7 +24,7 @@
 //     diagnostics in the page can show which SW is running.
 // =============================================================================
 
-const CACHE_VERSION = "film-beamer-v22-secrets-audit";
+const CACHE_VERSION = "film-beamer-v23-mobile-header";
 const CACHE_PREFIX = "film-beamer-";
 
 // Things that change every release — must come from network when possible.
