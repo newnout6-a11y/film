@@ -409,6 +409,12 @@ function utf8ToBase64Url(str) {
     .replace(/\//g, "_");
 }
 
+// In-flight de-duplication: while a JWT exchange is running, parallel
+// callers (validateDriveAccess, backupCfgToDrive, checkDrive,
+// findDriveCfgFile) get the same Promise. Otherwise three buttons clicked
+// in quick succession produce three identical OAuth requests and Google
+// starts replying with 429.
+let _driveAccessTokenInflight = null;
 async function getDriveAccessToken() {
   if (
     _driveAccessToken &&
@@ -416,67 +422,77 @@ async function getDriveAccessToken() {
   ) {
     return _driveAccessToken.token;
   }
-  if (!cfg.driveSaJson) {
-    throw new Error(
-      "Сначала вставь Google service-account JSON в раздел «Загрузить ключ Google Drive»."
+  if (_driveAccessTokenInflight) return _driveAccessTokenInflight;
+  _driveAccessTokenInflight = (async () => {
+    if (!cfg.driveSaJson) {
+      throw new Error(
+        "Сначала вставь Google service-account JSON в раздел «Загрузить ключ Google Drive»."
+      );
+    }
+    let sa;
+    try {
+      sa = JSON.parse(cfg.driveSaJson);
+    } catch (err) {
+      throw new Error(`Service-account JSON битый: ${err.message}`);
+    }
+    if (!sa.client_email || !sa.private_key) {
+      throw new Error("В JSON нет client_email/private_key.");
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const header = utf8ToBase64Url(
+      JSON.stringify({ alg: "RS256", typ: "JWT" })
     );
-  }
-  let sa;
+    const payload = utf8ToBase64Url(
+      JSON.stringify({
+        iss: sa.client_email,
+        scope: SYNC_SCOPES,
+        aud: "https://oauth2.googleapis.com/token",
+        iat: now,
+        exp: now + 3600,
+      })
+    );
+    const signingInput = `${header}.${payload}`;
+
+    const keyBuf = pemToArrayBuffer(sa.private_key);
+    const cryptoKey = await crypto.subtle.importKey(
+      "pkcs8",
+      keyBuf,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const sigBuf = await crypto.subtle.sign(
+      "RSASSA-PKCS1-v1_5",
+      cryptoKey,
+      new TextEncoder().encode(signingInput)
+    );
+    const jwt = `${signingInput}.${arrayBufferToBase64Url(sigBuf)}`;
+
+    const res = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion: jwt,
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Google OAuth ${res.status}: ${text}`);
+    }
+    const data = await res.json();
+    _driveAccessToken = {
+      token: data.access_token,
+      expiresAt: Date.now() + (data.expires_in || 3600) * 1000,
+    };
+    return data.access_token;
+  })();
   try {
-    sa = JSON.parse(cfg.driveSaJson);
-  } catch (err) {
-    throw new Error(`Service-account JSON битый: ${err.message}`);
+    return await _driveAccessTokenInflight;
+  } finally {
+    _driveAccessTokenInflight = null;
   }
-  if (!sa.client_email || !sa.private_key) {
-    throw new Error("В JSON нет client_email/private_key.");
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-  const header = utf8ToBase64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-  const payload = utf8ToBase64Url(
-    JSON.stringify({
-      iss: sa.client_email,
-      scope: SYNC_SCOPES,
-      aud: "https://oauth2.googleapis.com/token",
-      iat: now,
-      exp: now + 3600,
-    })
-  );
-  const signingInput = `${header}.${payload}`;
-
-  const keyBuf = pemToArrayBuffer(sa.private_key);
-  const cryptoKey = await crypto.subtle.importKey(
-    "pkcs8",
-    keyBuf,
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const sigBuf = await crypto.subtle.sign(
-    "RSASSA-PKCS1-v1_5",
-    cryptoKey,
-    new TextEncoder().encode(signingInput)
-  );
-  const jwt = `${signingInput}.${arrayBufferToBase64Url(sigBuf)}`;
-
-  const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion: jwt,
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Google OAuth ${res.status}: ${text}`);
-  }
-  const data = await res.json();
-  _driveAccessToken = {
-    token: data.access_token,
-    expiresAt: Date.now() + (data.expires_in || 3600) * 1000,
-  };
-  return data.access_token;
 }
 
 async function findDriveCfgFile(token, folderId) {
@@ -738,6 +754,16 @@ function openSettings() {
     fetchDefaultBranch().then(updateBranchHint).catch(() => {});
   }
   $("#settings-dialog").classList.remove("hidden");
+  // Reach out to GitHub for the secrets audit so the user immediately sees
+  // «GDRIVE_SERVICE_ACCOUNT — есть, обновлён X мин назад» instead of
+  // assuming "empty form = nothing on GitHub". Silent: refresh shows its
+  // own status row inside the panel.
+  if (typeof SecretsAudit !== "undefined" && SecretsAudit && SecretsAudit.refresh) {
+    // Render whatever we have cached first so the panel doesn't flash empty.
+    const last = SecretsAudit.lastResult();
+    if (last) SecretsAudit.render(last);
+    SecretsAudit.refresh({ silent: true, force: false }).catch(() => {});
+  }
 }
 
 function closeSettings() {
@@ -3348,6 +3374,17 @@ const RecentURLs = (() => {
       write([]);
       RecentURLs.render();
     },
+    // Wholesale replace — used by SettingsBackup.applySnapshot() so
+    // imported recent-URL lists actually land in localStorage instead of
+    // being silently dropped.
+    replace(items) {
+      if (!Array.isArray(items)) return;
+      const safe = items.filter(
+        (it) => it && typeof it.url === "string" && it.url
+      );
+      write(safe);
+      RecentURLs.render();
+    },
     render() {
       const wrap = $("#recent-urls-wrap");
       const list = $("#recent-urls");
@@ -3528,7 +3565,7 @@ const SwUpdater = (() => {
 // check is best-effort and updates a row asynchronously — opening the
 // dialog never blocks on slow checks.
 const Diagnostics = (() => {
-  const PAGE_VERSION = "v20-network-first";
+  const PAGE_VERSION = "v22-secrets-audit";
   let opened = false;
 
   function setRow(id, text, status) {
@@ -3670,21 +3707,29 @@ const Diagnostics = (() => {
       return;
     }
     try {
-      const gh = new GitHubClient(cfg);
-      const required = ["GDRIVE_SERVICE_ACCOUNT", "GDRIVE_FOLDER_ID"];
-      const missing = [];
-      for (const name of required) {
-        const sec = await gh.getActionsSecret(name).catch(() => null);
-        if (!sec) missing.push(name);
+      // Source-of-truth list lives in SecretsAudit; we just summarise its
+      // result for the diagnostics row. This keeps the two surfaces in sync.
+      const result = await SecretsAudit.audit({ force: true });
+      if (!result.ready) {
+        setRow("#diag-secrets", result.reason || "не готов", "warn");
+        return;
       }
-      if (missing.length) {
+      const missingRequired = result.rows
+        .filter((r) => r.required && r.exists === false)
+        .map((r) => r.name);
+      const present = result.rows.filter((r) => r.exists === true);
+      if (missingRequired.length) {
         setRow(
           "#diag-secrets",
-          `нет: ${missing.join(", ")}`,
+          `нет обязательных: ${missingRequired.join(", ")}`,
           "bad"
         );
       } else {
-        setRow("#diag-secrets", "OK · GDRIVE_* заданы", "ok");
+        setRow(
+          "#diag-secrets",
+          `OK · ${present.length}/${result.rows.length} заданы`,
+          "ok"
+        );
       }
     } catch (err) {
       setRow("#diag-secrets", `${err.message || err}`, "bad");
@@ -3923,6 +3968,271 @@ const Diagnostics = (() => {
   return { open, close, bind };
 })();
 
+// ---------- Secrets audit ----------
+//
+// Renders a panel inside the Settings dialog (and feeds the "Секреты репо"
+// row in Diagnostics) that says, for every secret the project knows about,
+// whether it's present on GitHub and when it was last updated. The actual
+// value is never returned by the API — we only get `created_at` /
+// `updated_at`. That's enough to answer the user's question:
+//
+//   «Я уже загружал GDRIVE_SERVICE_ACCOUNT, почему после жёсткой
+//   перезагрузки сайт снова просит JSON?»
+//
+// After clearing localStorage the form fields are empty, but the secret
+// is still safely on GitHub — this panel makes that explicit instead of
+// silently nudging the user to re-upload.
+const SecretsAudit = (() => {
+  // Single source of truth: kept in sync with the secret names referenced
+  // by the workflows in `.github/workflows/*.yml` and the uploaders in
+  // bindDriveUpload / bindYtCookiesUpload / bindTrackersUpload /
+  // uploadCookieBucket.
+  const KNOWN = [
+    {
+      name: "GDRIVE_SERVICE_ACCOUNT",
+      group: "Google Drive",
+      required: true,
+      description: "Ключ сервис-аккаунта (JSON) для заливки в Drive.",
+    },
+    {
+      name: "GDRIVE_FOLDER_ID",
+      group: "Google Drive",
+      required: true,
+      description: "ID папки Drive, куда ложить файлы.",
+    },
+    {
+      name: "YT_COOKIES",
+      group: "yt-dlp",
+      required: false,
+      description: "Куки YouTube/age-gate, если ролики требуют логина.",
+    },
+    {
+      name: "RUTRACKER_USERNAME",
+      group: "RuTracker",
+      required: false,
+      description: "Логин для выкачивания магнетов с RuTracker.",
+    },
+    {
+      name: "RUTRACKER_PASSWORD",
+      group: "RuTracker",
+      required: false,
+      description: "Пароль парной к RUTRACKER_USERNAME.",
+    },
+    {
+      name: "RUTRACKER_COOKIES",
+      group: "RuTracker",
+      required: false,
+      description: "Netscape-cookies; полезны, если включён 2FA.",
+    },
+    {
+      name: "KINOZAL_USERNAME",
+      group: "Kinozal",
+      required: false,
+      description: "Логин Kinozal.",
+    },
+    {
+      name: "KINOZAL_PASSWORD",
+      group: "Kinozal",
+      required: false,
+      description: "Пароль Kinozal.",
+    },
+    {
+      name: "KINOZAL_COOKIES",
+      group: "Kinozal",
+      required: false,
+      description: "Netscape-cookies Kinozal (если логина не хватает).",
+    },
+    {
+      name: "NNM_USERNAME",
+      group: "NNM-Club",
+      required: false,
+      description: "Логин NNM-Club.",
+    },
+    {
+      name: "NNM_PASSWORD",
+      group: "NNM-Club",
+      required: false,
+      description: "Пароль NNM-Club.",
+    },
+    {
+      name: "NNM_COOKIES",
+      group: "NNM-Club",
+      required: false,
+      description: "Netscape-cookies NNM-Club.",
+    },
+  ];
+
+  let _last = null; // Last audit() result, used by Diagnostics.
+  let _inflight = null;
+
+  // Probe each secret in parallel. Errors are tagged on a per-row basis
+  // (e.g. one 403 doesn't blank the whole list). Use the same in-flight
+  // de-duplication trick getDriveAccessToken uses so that
+  // openSettings()+Diagnostics.open() back-to-back hit GitHub once.
+  function audit({ force = false } = {}) {
+    if (_inflight) return _inflight;
+    if (!force && _last && Date.now() - _last.ts < 30_000) {
+      return Promise.resolve(_last);
+    }
+    _inflight = (async () => {
+      const result = {
+        ts: Date.now(),
+        ready: false,
+        rows: KNOWN.map((k) => ({ ...k, exists: null, updatedAt: null, error: null })),
+      };
+      if (!cfg.token || !cfg.repo) {
+        result.ready = false;
+        result.reason = "Не заданы репо и/или PAT.";
+        _last = result;
+        return result;
+      }
+      result.ready = true;
+      const gh = new GitHubClient(cfg);
+      await Promise.all(
+        result.rows.map(async (row) => {
+          try {
+            const sec = await gh.getActionsSecret(row.name);
+            if (sec) {
+              row.exists = true;
+              row.updatedAt = sec.updated_at || sec.created_at || null;
+            } else {
+              row.exists = false;
+            }
+          } catch (err) {
+            row.error = err.message || String(err);
+          }
+        })
+      );
+      _last = result;
+      return result;
+    })().finally(() => {
+      _inflight = null;
+    });
+    return _inflight;
+  }
+
+  function setStatus(text, kind = "info") {
+    const el = $("#secrets-audit-status");
+    if (!el) return;
+    el.textContent = text || "";
+    el.classList.remove("text-emerald-300", "text-rose-300", "text-slate-500");
+    el.classList.add(
+      kind === "success"
+        ? "text-emerald-300"
+        : kind === "error"
+        ? "text-rose-300"
+        : "text-slate-500"
+    );
+  }
+
+  function render(result) {
+    const list = $("#secrets-audit-list");
+    if (!list) return;
+    list.innerHTML = "";
+    if (!result || !result.ready) {
+      const li = document.createElement("li");
+      li.className =
+        "rounded-lg border border-white/10 bg-ink-900/60 px-3 py-2 text-slate-400";
+      li.textContent =
+        result && result.reason
+          ? result.reason
+          : "Сначала укажи репо и PAT выше — иначе GitHub API не пустит.";
+      list.appendChild(li);
+      return;
+    }
+    // Group rows by `group` to match the visual layout of the uploader
+    // sections below.
+    const byGroup = new Map();
+    for (const row of result.rows) {
+      if (!byGroup.has(row.group)) byGroup.set(row.group, []);
+      byGroup.get(row.group).push(row);
+    }
+    for (const [group, rows] of byGroup.entries()) {
+      const header = document.createElement("li");
+      header.className =
+        "mt-2 px-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400";
+      header.textContent = group;
+      list.appendChild(header);
+      for (const row of rows) {
+        const li = document.createElement("li");
+        li.className =
+          "flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-ink-900/60 px-3 py-2";
+        const left = document.createElement("div");
+        left.className = "min-w-0 flex flex-col";
+        const code = document.createElement("code");
+        code.className = "font-mono text-[11px] text-slate-200";
+        code.textContent = row.name;
+        left.appendChild(code);
+        const desc = document.createElement("span");
+        desc.className = "text-[11px] text-slate-500";
+        desc.textContent = row.description;
+        left.appendChild(desc);
+        li.appendChild(left);
+        const right = document.createElement("span");
+        right.className = "shrink-0 text-right text-[11px]";
+        if (row.error) {
+          right.textContent = `ошибка: ${row.error.slice(0, 60)}`;
+          right.classList.add("text-rose-300");
+        } else if (row.exists === true) {
+          const ago = row.updatedAt ? timeAgo(row.updatedAt) : "";
+          right.textContent = ago ? `✓ есть · ${ago}` : "✓ есть";
+          right.classList.add("text-emerald-300");
+        } else if (row.exists === false) {
+          right.textContent = row.required ? "✗ нет (обязательный)" : "—";
+          right.classList.add(
+            row.required ? "text-rose-300" : "text-slate-500"
+          );
+        } else {
+          right.textContent = "…";
+          right.classList.add("text-slate-500");
+        }
+        li.appendChild(right);
+        list.appendChild(li);
+      }
+    }
+  }
+
+  async function refresh({ silent = false, force = true } = {}) {
+    if (!silent) setStatus("Проверяю…");
+    let result;
+    try {
+      result = await audit({ force });
+    } catch (err) {
+      setStatus(`Ошибка: ${err.message || err}`, "error");
+      return null;
+    }
+    render(result);
+    if (!result.ready) {
+      setStatus(result.reason || "", "error");
+      return result;
+    }
+    const present = result.rows.filter((r) => r.exists === true).length;
+    const missingRequired = result.rows.filter(
+      (r) => r.required && r.exists === false
+    );
+    if (missingRequired.length) {
+      setStatus(
+        `Не хватает: ${missingRequired.map((r) => r.name).join(", ")}.`,
+        "error"
+      );
+    } else {
+      setStatus(`На GitHub: ${present} из ${result.rows.length}.`, "success");
+    }
+    return result;
+  }
+
+  function bind() {
+    const btn = $("#secrets-audit-refresh");
+    if (btn) btn.addEventListener("click", () => refresh({ force: true }));
+  }
+
+  function lastResult() {
+    return _last;
+  }
+
+  return { KNOWN, audit, render, refresh, bind, lastResult };
+})();
+
 // ---------- Settings test buttons ----------
 //
 // "Проверить токен" / "Проверить Drive" / "Проверить секреты" buttons in the
@@ -4037,6 +4347,36 @@ function bindSettingsValidators() {
   if (tokenBtn) tokenBtn.addEventListener("click", validateGitHubAccess);
   const driveBtn = $("#drive-test");
   if (driveBtn) driveBtn.addEventListener("click", validateDriveAccess);
+
+  // Stale status reset: once the user starts editing the inputs that fed
+  // a previous "Проверить …" run, blank the status line so the previous
+  // green tick can't be mistaken for confirmation of the new value.
+  const tokenStatus = $("#cfg-token-status");
+  if (tokenStatus) {
+    const reset = () => {
+      if (tokenStatus.textContent) {
+        tokenStatus.textContent = "";
+        tokenStatus.className = "text-xs text-slate-500";
+      }
+    };
+    const tokenInput = $("#cfg-token");
+    const repoInput = $("#cfg-repo");
+    if (tokenInput) tokenInput.addEventListener("input", reset);
+    if (repoInput) repoInput.addEventListener("input", reset);
+  }
+  const driveStatus = $("#drive-test-status");
+  if (driveStatus) {
+    const reset = () => {
+      if (driveStatus.textContent) {
+        driveStatus.textContent = "";
+        driveStatus.className = "mt-1 text-xs text-slate-500";
+      }
+    };
+    const driveJson = $("#drive-json");
+    const driveFolder = $("#drive-folder");
+    if (driveJson) driveJson.addEventListener("input", reset);
+    if (driveFolder) driveFolder.addEventListener("input", reset);
+  }
 }
 
 // ---------- Keyboard shortcuts ----------
@@ -4191,7 +4531,7 @@ function bindKeyboardShortcuts() {
 // just crashed") — instead we catch, surface a toast and log the full
 // stack so the next session has a clean trace to look at.
 function _safeOpenHandler(label, getter) {
-  return (ev) => {
+  return async (ev) => {
     try {
       if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
       const mod = getter();
@@ -4205,7 +4545,10 @@ function _safeOpenHandler(label, getter) {
         );
         return;
       }
-      mod.open();
+      // open() may be async (BulkQueue/RunHistory render with awaited
+      // fetches); awaiting here ensures rejected promises hit the catch
+      // below instead of becoming silent unhandled rejections.
+      await mod.open();
     } catch (err) {
       console.error(`[fb] ${label}.open() crashed:`, err);
       toast(
@@ -4830,7 +5173,6 @@ const Notifications = (() => {
     const enable = $("#notify-enable");
     const disableBtn = $("#notify-disable");
     const status = $("#notify-status");
-    const sound = $("#sound-toggle");
     const refreshStatus = () => {
       if (!status) return;
       if (!supported()) {
@@ -4859,13 +5201,10 @@ const Notifications = (() => {
       disable();
       refreshStatus();
     });
-    if (sound) {
-      sound.checked = Sounds.read();
-      sound.addEventListener("change", () => {
-        Sounds.set(sound.checked);
-        if (sound.checked) Sounds.chirp();
-      });
-    }
+    // Sound checkbox is owned by bindSoundToggle() — we used to also wire
+    // a `change` listener here, which double-fired Sounds.set on every
+    // click and stacked two toasts on top of each other. Leaving the
+    // wiring in one place keeps the behaviour predictable.
   }
 
   return {
@@ -5435,6 +5774,17 @@ const WorkflowPresets = (() => {
 
   function remove(name) {
     write(read().filter((p) => p.name !== name));
+    notify();
+  }
+
+  // Wholesale replace + notify + render. Used by SettingsBackup.applySnapshot
+  // so an imported preset list shows up in the dropdown immediately. Plain
+  // write() skips listeners; we want them fired so the manage-list and the
+  // <select> in the form both refresh without a page reload.
+  function replaceAll(list) {
+    if (!Array.isArray(list)) return;
+    const safe = list.filter((p) => p && typeof p === "object" && p.name);
+    write(safe);
     notify();
   }
 
@@ -6188,18 +6538,18 @@ const SettingsBackup = (() => {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1500);
-    toast("Настройки сохранены в файл", "ok", 2400);
+    toast("Настройки сохранены в файл", "success", 2400);
   }
 
   function exportToClipboard(opts = {}) {
     const text = JSON.stringify(snapshot(opts), null, 2);
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(
-        () => toast("Настройки скопированы в буфер", "ok", 2400),
-        () => toast("Не получилось копировать", "warn", 2400)
+        () => toast("Настройки скопированы в буфер", "success", 2400),
+        () => toast("Не получилось копировать", "info", 2400)
       );
     } else {
-      toast("Clipboard API недоступен", "warn");
+      toast("Clipboard API недоступен", "info");
     }
   }
 
@@ -6215,11 +6565,17 @@ const SettingsBackup = (() => {
       }
       saveCfg(cfg);
     }
+    // Presets are persisted+rendered via the module's public API so the
+    // dropdown and manage-list refresh immediately, no page reload needed.
     if (Array.isArray(snap.presets)) {
-      WorkflowPresets.write(snap.presets);
+      WorkflowPresets.replaceAll(snap.presets);
+    }
+    // Recent URLs round-trip through replace() instead of being dropped.
+    if (Array.isArray(snap.recentUrls) && typeof RecentURLs !== "undefined") {
+      RecentURLs.replace(snap.recentUrls);
     }
     if (snap.theme) Theme.set(snap.theme);
-    toast("Настройки применены — перезагрузи страницу", "ok", 4500);
+    toast("Настройки применены — перезагрузи страницу", "success", 4500);
   }
 
   async function importFromFile(file) {
@@ -6476,6 +6832,7 @@ document.addEventListener("DOMContentLoaded", () => {
   BulkQueue.bind();
   HelpDialog.bind();
   SettingsBackup.bind();
+  SecretsAudit.bind();
   bindHeaderActionButtons();
   RecentURLs.render();
 
@@ -6493,9 +6850,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // (e.g. SA not yet configured, network issue).
   bootstrapAccountSync();
   // Apply ?url=... and friends, then resume tracking a previously dispatched
-  // run if there was one.
+  // run if there was one. resumeActiveRun() needs both repo + token in cfg
+  // — isReady() guards against the post-clearCfg() case where the listing
+  // call would otherwise hit GitHub with an empty Authorization header and
+  // log a noisy 401 in ErrorLog for no benefit.
   applyDeepLinkPrefill();
-  resumeActiveRun();
+  if (isReady()) resumeActiveRun();
 
   // Pause polling when tab is hidden to save quota.
   document.addEventListener("visibilitychange", () => {

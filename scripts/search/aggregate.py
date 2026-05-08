@@ -69,14 +69,28 @@ def main() -> int:
     items = load_all()
     log(f"aggregate: loaded {len(items)} raw item(s)")
 
-    # Drop unusable entries.
-    items = [
-        it
-        for it in items
-        if it.get("magnet")
-        and it.get("title")
-        and isinstance(it.get("seeders"), int)
-    ]
+    # Drop unusable entries. Some trackers (e.g. apibay's stub rows) hand us
+    # ``seeders=null`` which made the previous ``isinstance(int)`` filter
+    # silently throw the row away — normalise to 0 instead so the magnet
+    # is at least surfaced and the user can decide.
+    cleaned: list[dict] = []
+    for it in items:
+        if not it.get("magnet") or not it.get("title"):
+            continue
+        seeders = it.get("seeders")
+        if not isinstance(seeders, int):
+            try:
+                it["seeders"] = int(seeders) if seeders is not None else 0
+            except (TypeError, ValueError):
+                it["seeders"] = 0
+        leechers = it.get("leechers")
+        if not isinstance(leechers, int):
+            try:
+                it["leechers"] = int(leechers) if leechers is not None else 0
+            except (TypeError, ValueError):
+                it["leechers"] = 0
+        cleaned.append(it)
+    items = cleaned
 
     # Deduplicate by info_hash (or magnet) — prefer the entry with most seeders.
     by_key: dict[str, dict] = {}
@@ -102,8 +116,13 @@ def main() -> int:
     deduped.sort(key=score, reverse=True)
     top = deduped[:TOP_N]
     log(f"aggregate: writing top {len(top)} into results.json")
-    with open("results.json", "w", encoding="utf-8") as f:
+    # Atomic write: a partial results.json from a crashed run was previously
+    # picked up by the UI and rendered as «nothing found». Write+rename keeps
+    # the previous file in place if json.dump throws halfway through.
+    tmp = "results.json.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(top, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, "results.json")
     return 0
 
 

@@ -44,3 +44,25 @@ jobs:
         run: |
           set -euo pipefail
           node --check docs/app.js
+          # The service worker is a separate top-level script; previously it
+          # was excluded from the syntax check, so a typo in sw.js would
+          # silently ship to production and break offline support.
+          node --check docs/sw.js
+
+      - name: Vendor bundle present
+        run: |
+          set -euo pipefail
+          # sw.js's SHELL_STATIC precaches these files. If they're missing on
+          # disk, install would silently fail (best-effort) and the page
+          # would 404 on libsodium during secret upload.
+          for f in docs/vendor/libsodium-sumo.min.js docs/vendor/libsodium-wrappers.min.js; do
+            if [ ! -f "$f" ]; then
+              echo "::error file=$f::vendor bundle missing — service worker SHELL_STATIC references it"
+              exit 1
+            fi
+          done
+
+      - name: Python syntax check
+        run: |
+          set -euo pipefail
+          python3 -m py_compile $(git ls-files 'scripts/**/*.py')

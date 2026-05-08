@@ -36,8 +36,15 @@ def log(msg: str) -> None:
 def write_results(tracker_slug: str, items: list[dict[str, Any]]) -> None:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     path = os.path.join(RESULTS_DIR, f"{tracker_slug}.json")
-    with open(path, "w", encoding="utf-8") as f:
+    # Atomic write: aggregate.py reads every <slug>.json in this directory.
+    # If a tracker crashed mid-dump previously, aggregate could pick up a
+    # truncated file and json.load would raise, dropping the whole tracker.
+    # Write to a sibling .tmp first and rename — POSIX rename is atomic on
+    # the same filesystem.
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(items, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
     log(f"{tracker_slug}: wrote {len(items)} item(s) to {path}")
 
 
