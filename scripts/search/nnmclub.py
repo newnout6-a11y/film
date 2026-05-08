@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import (  # noqa: E402
     PUBLIC_TRACKERS,
+    cookies_from_env,
     env,
     log,
     parse_int,
@@ -55,10 +56,36 @@ def login(session: requests.Session, username: str, password: str) -> bool:
     return False
 
 
+def is_logged_in(session: requests.Session) -> bool:
+    try:
+        r = session.get(f"{BASE}/index.php", timeout=15)
+    except Exception as e:  # noqa: BLE001
+        log(f"nnm: probe error: {e}")
+        return False
+    if r.status_code != 200:
+        return False
+    body = r.text
+    # phpBB returns the login form on the index page when not authenticated.
+    if "login.php" in body and "logout.php" not in body:
+        return False
+    return True
+
+
 def parse_search(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "lxml")
-    rows = soup.select("table.forumline tr") or soup.select("tr")
+    # NNM-Club uses phpBB themes — the row container changes between
+    # `table.forumline`, `table.tablesorter` and a plain `table`. The only
+    # reliable invariant is the viewtopic anchor, so widen the row sweep
+    # accordingly.
+    rows = (
+        soup.select("table.forumline tr")
+        or soup.select("table.tablesorter tr")
+        or soup.select("table.forum tr")
+        or soup.select("table tr")
+        or soup.select("tr")
+    )
     out: list[dict] = []
+    seen: set[str] = set()
     for row in rows:
         title_a = row.select_one('a[href*="viewtopic.php?t="]')
         if not title_a:
@@ -68,6 +95,9 @@ def parse_search(html: str) -> list[dict]:
         if not m:
             continue
         topic_id = m.group(1)
+        if topic_id in seen:
+            continue
+        seen.add(topic_id)
         title = title_a.get_text(strip=True)
         if not title:
             continue
@@ -143,18 +173,35 @@ def main() -> int:
     query = env("QUERY")
     user = env("NNM_USERNAME")
     pwd = env("NNM_PASSWORD")
+    cookies = cookies_from_env("NNM_COOKIES")
     if not query:
         log("nnm: empty query, skipping")
         write_results(TRACKER_SLUG, [])
         return 0
-    if not user or not pwd:
-        log("nnm: no credentials, skipping (set NNM_USERNAME / NNM_PASSWORD)")
+    if not (user and pwd) and not cookies:
+        log(
+            "nnm: no credentials, skipping (set NNM_USERNAME / NNM_PASSWORD "
+            "or paste a Netscape NNM_COOKIES blob)"
+        )
         write_results(TRACKER_SLUG, [])
         return 0
 
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
-    if not login(session, user, pwd):
+    authed = False
+    if cookies:
+        for k, v in cookies.items():
+            session.cookies.set(k, v, domain=".nnmclub.to")
+        if is_logged_in(session):
+            log(f"nnm: authenticated via NNM_COOKIES ({len(cookies)} cookies)")
+            authed = True
+        else:
+            log("nnm: cookies present but session probe failed; trying login.php")
+    if not authed and user and pwd:
+        if login(session, user, pwd):
+            authed = True
+    if not authed:
+        log("nnm: not authenticated, skipping")
         write_results(TRACKER_SLUG, [])
         return 0
 

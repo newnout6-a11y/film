@@ -167,3 +167,69 @@ def parse_int(text: str) -> int:
 
 def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+# ---------- Netscape cookie jar parser ----------
+#
+# All three authenticated trackers (RuTracker, Kinozal, NNM-Club) accept the
+# *same* set of session cookies that you'd export from a logged-in browser
+# session via "cookies.txt" extensions. This is invaluable when:
+#  * the user has 2FA / Captcha enabled and login.php POST stops working;
+#  * the password contains characters that mangle through windows-1251;
+#  * GitHub Actions IP gets challenged but the browser session still works.
+#
+# We accept either the standard Netscape "cookies.txt" format (what
+# yt-dlp / curl / wget use) or a `name=value; name2=value2` cookie header
+# string. Empty / comment-only / malformed input returns an empty dict so
+# callers can short-circuit safely.
+
+def parse_netscape_cookies(text: str) -> dict[str, str]:
+    """Parse Netscape cookies.txt content (or a `name=value;` header).
+
+    Returns a dict of name->value. Domain/path/expiry are dropped — the
+    caller pins the cookies to the tracker domain themselves. Skips
+    HttpOnly-prefixed comments and blank lines.
+    """
+    if not text:
+        return {}
+    out: dict[str, str] = {}
+    raw = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    # Cookie header form: a; b=2; c=3
+    if "\t" not in raw and "=" in raw and ";" in raw and "\n" not in raw:
+        for chunk in raw.split(";"):
+            chunk = chunk.strip()
+            if not chunk or "=" not in chunk:
+                continue
+            k, _, v = chunk.partition("=")
+            k = k.strip()
+            if k:
+                out[k] = v.strip()
+        return out
+    for line in raw.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        # cookies.txt comments — `# Netscape HTTP Cookie File` etc. The
+        # `#HttpOnly_` prefix is a non-standard extension chrome/curl
+        # emit; strip it so the cookie still applies.
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_") :]
+        elif line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 7:
+            # `name\tvalue` two-column shorthand — treat as cookie pair.
+            if len(parts) == 2 and parts[0]:
+                out[parts[0].strip()] = parts[1].strip()
+            continue
+        # Standard Netscape: domain  flag  path  secure  expiry  name  value
+        name = parts[5].strip()
+        value = parts[6].strip() if len(parts) > 6 else ""
+        if name:
+            out[name] = value
+    return out
+
+
+def cookies_from_env(name: str) -> dict[str, str]:
+    """Convenience wrapper: read env(name) as a Netscape cookie blob."""
+    return parse_netscape_cookies(env(name))

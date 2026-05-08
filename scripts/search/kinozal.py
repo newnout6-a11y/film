@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import (  # noqa: E402
+    cookies_from_env,
     env,
     log,
     parse_int,
@@ -48,10 +49,40 @@ def login(session: requests.Session, username: str, password: str) -> bool:
     return False
 
 
+def is_logged_in(session: requests.Session) -> bool:
+    """Kinozal browse.php returns the login form (HTTP 200, but the markup
+    contains <form action="/takelogin.php">) when the session has expired,
+    so a status-code check isn't enough. We probe a known-restricted page
+    and look for the login form marker in the body."""
+    try:
+        r = session.get(f"{BASE}/browse.php", timeout=15)
+    except Exception as e:  # noqa: BLE001
+        log(f"kinozal: probe error: {e}")
+        return False
+    if r.status_code != 200:
+        return False
+    # `t_peer` is the search-results table; if we hit the login wall the
+    # response replaces it with the takelogin form. Check both signals so
+    # we don't false-positive on empty result pages.
+    body = r.text
+    if "takelogin.php" in body and "browse.php" not in body:
+        return False
+    return True
+
+
 def parse_search(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "lxml")
-    rows = soup.select("table.t_peer tr") or soup.select("table tr")
+    # Kinozal frequently flips between `table.t_peer`, `table.tabledark` and
+    # plain table layouts depending on the skin / mobile vs desktop. Match
+    # any row that contains a details-link — it's the only invariant.
+    rows = (
+        soup.select("table.t_peer tr")
+        or soup.select("table.tabledark tr")
+        or soup.select("table.bordered tr")
+        or soup.select("table tr")
+    )
     out: list[dict] = []
+    seen: set[str] = set()
     for row in rows:
         title_a = row.select_one('a[href*="/details.php?id="]')
         if not title_a:
@@ -61,12 +92,17 @@ def parse_search(html: str) -> list[dict]:
         if not m:
             continue
         topic_id = m.group(1)
+        if topic_id in seen:
+            continue
+        seen.add(topic_id)
         title = title_a.get_text(strip=True)
+        if not title:
+            continue
         cells = row.find_all("td")
         if len(cells) < 5:
             continue
-        # Kinozal layout: ... | size | seeders | leechers | ...
-        # Indexes vary; pull from the right end which is more stable.
+        # Kinozal layout: ... | size | seeders | leechers | downloaded
+        # The trailing four cells are stable across skins.
         size_text = cells[-4].get_text(" ", strip=True) if len(cells) >= 4 else ""
         seeders_text = cells[-3].get_text(strip=True) if len(cells) >= 3 else ""
         leechers_text = cells[-2].get_text(strip=True) if len(cells) >= 2 else ""
@@ -120,18 +156,35 @@ def main() -> int:
     query = env("QUERY")
     user = env("KINOZAL_USERNAME")
     pwd = env("KINOZAL_PASSWORD")
+    cookies = cookies_from_env("KINOZAL_COOKIES")
     if not query:
         log("kinozal: empty query, skipping")
         write_results(TRACKER_SLUG, [])
         return 0
-    if not user or not pwd:
-        log("kinozal: no credentials, skipping (set KINOZAL_USERNAME / KINOZAL_PASSWORD)")
+    if not (user and pwd) and not cookies:
+        log(
+            "kinozal: no credentials, skipping (set KINOZAL_USERNAME / "
+            "KINOZAL_PASSWORD or paste a Netscape KINOZAL_COOKIES blob)"
+        )
         write_results(TRACKER_SLUG, [])
         return 0
 
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
-    if not login(session, user, pwd):
+    authed = False
+    if cookies:
+        for k, v in cookies.items():
+            session.cookies.set(k, v, domain=".kinozal.tv")
+        if is_logged_in(session):
+            log(f"kinozal: authenticated via KINOZAL_COOKIES ({len(cookies)} cookies)")
+            authed = True
+        else:
+            log("kinozal: cookies present but session probe failed; trying takelogin.php")
+    if not authed and user and pwd:
+        if login(session, user, pwd):
+            authed = True
+    if not authed:
+        log("kinozal: not authenticated, skipping")
         write_results(TRACKER_SLUG, [])
         return 0
 
