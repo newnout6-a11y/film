@@ -28,10 +28,7 @@ STAGE_ORDER = (
     ("apibay", "Pirate Bay"),
     ("kinozal", "Kinozal"),
     ("nnm", "NNM-Club"),
-    ("kodik", "Kodik"),
-    ("videocdn", "VideoCDN"),
     ("hdrezka", "HDRezka"),
-    ("bazon", "Bazon"),
     ("kinopoisk", "Кинопоиск"),
 )
 QUALITY_BOOST = (
@@ -213,10 +210,7 @@ def main() -> int:
             "kinozal": "kinozal",
             "nnm-club": "nnm",
             "nnm": "nnm",
-            "kodik": "kodik",
-            "videocdn": "videocdn",
             "hdrezka": "hdrezka",
-            "bazon": "bazon",
             "кинопоиск": "kinopoisk",
             "kinopoisk": "kinopoisk",
         }.get(tr, tr)
