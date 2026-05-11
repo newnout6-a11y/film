@@ -38,7 +38,7 @@ on:
         description: "Make video PWA-streamable: none | remux (faststart, ~30s) | transcode (H.264 720p sidecar, ~realtime) | both"
         required: false
         type: choice
-        default: "remux"
+        default: "both"
         options:
           - none
           - remux
@@ -635,7 +635,7 @@ jobs:
               # transcoding — that file is already web-streamable.
               if [ -f "${base}.web.mp4" ] && [ "$mode" = "both" ]; then
                 action="$action; transcode skipped (есть lossless .web.mp4)"
-              elif $web_friendly && [ "$mode" = "transcode" ]; then
+              elif $web_friendly && { [ "$mode" = "transcode" ] || [ "$mode" = "both" ]; }; then
                 action="transcode skipped (исходник уже H.264 mp4 faststart)"
               else
                 # 720p cap, AAC 128k, veryfast for predictable runtime.

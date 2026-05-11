@@ -20,20 +20,20 @@
     <meta name="application-name" content="Film Beamer" />
     <meta name="format-detection" content="telephone=no" />
 
-    <link rel="manifest" href="./manifest.webmanifest?v=38" />
+    <link rel="manifest" href="./manifest.webmanifest?v=39" />
     <link rel="icon" type="image/svg+xml" href="./icon.svg" />
     <link rel="apple-touch-icon" href="./icon.svg" />
     <!-- Pre-compiled Tailwind bundle (23 KB minified) replaces the 350 KB
          Tailwind Play CDN script. The config lives at /tailwind.config.js
          and the build is in scripts/build_tailwind.sh. -->
-    <link rel="preload" href="./tailwind.css?v=38" as="style" />
-    <link rel="preload" href="./style.css?v=38" as="style" />
-    <link rel="preload" href="./app.js?v=38" as="script" />
+    <link rel="preload" href="./tailwind.css?v=39" as="style" />
+    <link rel="preload" href="./style.css?v=39" as="style" />
+    <link rel="preload" href="./app.js?v=39" as="script" />
     <link rel="dns-prefetch" href="https://api.github.com" />
     <link rel="preconnect" href="https://api.github.com" crossorigin />
     <link rel="preconnect" href="https://knpthwdqolzzeotewuzj.supabase.co" crossorigin />
-    <link rel="stylesheet" href="./tailwind.css?v=38" />
-    <link rel="stylesheet" href="./style.css?v=38" />
+    <link rel="stylesheet" href="./tailwind.css?v=39" />
+    <link rel="stylesheet" href="./style.css?v=39" />
   </head>
   <body class="min-h-screen bg-ink-950 text-slate-100 antialiased font-sans selection:bg-accent-500/30">
     <div class="bg-grid pointer-events-none fixed inset-0 -z-10"></div>
@@ -485,6 +485,22 @@
             />
           </label>
 
+          <label class="mt-4 block">
+            <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Совместимость плеера</span>
+            <select
+              id="web_ready"
+              class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+            >
+              <option value="both">Авто: сделать браузерную .web.mp4, если исходник не играет</option>
+              <option value="remux">Быстро: только faststart/remux без перекодирования</option>
+              <option value="transcode">Принудительно: перекодировать в H.264 720p</option>
+              <option value="none">Не трогать файл</option>
+            </select>
+            <span class="mt-1 block text-xs text-slate-500">
+              Если «оригинал» даёт code=4, нужен .web.mp4: Drive хранит файл, но браузер всё равно требует поддерживаемый кодек.
+            </span>
+          </label>
+
           <div class="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-white/5 bg-ink-900/40 p-2">
             <label class="flex flex-1 items-center gap-2 text-xs text-slate-400">
               <span class="shrink-0 uppercase tracking-wider">Пресет</span>
@@ -598,7 +614,7 @@
           aria-modal="true"
           aria-label="Видеоплеер"
         >
-          <div class="relative flex max-h-[95vh] w-full max-w-5xl flex-col gap-3 rounded-2xl border border-white/10 bg-ink-900 p-3 shadow-2xl shadow-black/60 sm:p-4">
+          <div class="player-modal-panel relative flex w-full flex-col gap-3 rounded-2xl border border-white/10 bg-ink-900 p-3 shadow-2xl shadow-black/60 sm:p-4">
             <div class="flex items-center justify-between gap-3">
               <div class="min-w-0">
                 <div id="player-title" class="truncate text-sm font-semibold text-slate-100"></div>
@@ -1605,7 +1621,7 @@
               <p class="mt-1 text-xs text-slate-400">
                 Вставь много URL — по одной строке. Опционально через
                 <code class="rounded bg-ink-900 px-1 text-[10px]">|</code> можно
-                задать имя файла, папку и качество.
+                задать имя файла, папку, качество и режим плеера.
               </p>
             </div>
             <button
@@ -1622,7 +1638,7 @@
             <textarea
               id="queue-input"
               rows="6"
-              placeholder="https://www.youtube.com/watch?v=...&#10;magnet:?xt=urn:btih:...&#10;https://example.com/file.mp4 | моё-кино | Фильмы/2026 | 1080p"
+              placeholder="https://www.youtube.com/watch?v=...&#10;magnet:?xt=urn:btih:...&#10;https://example.com/file.mp4 | моё-кино | Фильмы/2026 | 1080p | both"
               class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 font-mono text-xs focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
             ></textarea>
           </label>
@@ -1808,7 +1824,7 @@
 
             <div class="help-card sm:col-span-2">
               <h4 class="help-card-title">Очередь — формат каждой строки</h4>
-              <pre class="help-code">URL [ | имя_файла [ | подпапка [ | качество ] ] ]</pre>
+              <pre class="help-code">URL [ | имя_файла [ | подпапка [ | качество [ | web_ready ] ] ] ]</pre>
               <p class="text-[11px] text-slate-500">
                 Поля разделяются <code>|</code> или табами. Например:
                 <code>https://youtu.be/dQw4w9WgXcQ | rickroll | Музыка | 1080p</code>
@@ -2066,7 +2082,7 @@
       style="bottom: max(env(safe-area-inset-bottom), 1.5rem);"
     ></div>
 
-    <script src="./app.js?v=38"></script>
+    <script src="./app.js?v=39"></script>
     <script>
       // Service worker registration is handled inside app.js (registerServiceWorker)
       // so the page can detect updates and show the banner. We keep this stub

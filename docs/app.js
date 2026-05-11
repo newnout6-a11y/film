@@ -1116,6 +1116,7 @@ async function submitBeam({ qualityOverride = null, toastLabel = null } = {}) {
     subfolder,
     quality,
     ytdlp_format: quality === "custom" ? customFormat || "bv*+ba/b" : "",
+    web_ready: $("#web_ready")?.value || "both",
   };
 
   const cls = classifyUrl(rawUrl).kind;
@@ -1172,6 +1173,7 @@ async function submitBeam({ qualityOverride = null, toastLabel = null } = {}) {
       subfolder,
       quality,
       ytdlp_format: inputs.ytdlp_format,
+      web_ready: inputs.web_ready,
       status: "queued",
     });
     toast(toastLabel || "Запущено — раннер качает…", "success");
@@ -3080,6 +3082,7 @@ async function beamMagnet(item, btn) {
         subfolder: "",
         quality: "auto",
         ytdlp_format: "",
+        web_ready: "both",
       },
     });
     RecentURLs.add({
@@ -3095,6 +3098,7 @@ async function beamMagnet(item, btn) {
       subfolder: "",
       quality: "auto",
       ytdlp_format: "",
+      web_ready: "both",
       searchQuery: item.searchQuery || "",
       tracker: item.tracker || "",
       seeders: typeof item.seeders === "number" ? item.seeders : null,
@@ -5601,6 +5605,7 @@ function bindSoundPreviewButtons() {
 //   &filename=...
 //   &subfolder=...
 //   &quality=...
+//   &web_ready=...
 //   &action=beam (auto-submit if isReady())
 function applyDeepLinkPrefill() {
   let parsed;
@@ -5639,6 +5644,13 @@ function applyDeepLinkPrefill() {
       }
     }
   }
+  const webReady = params.get("web_ready");
+  if (webReady) {
+    const w = $("#web_ready");
+    if (w && ["none", "remux", "transcode", "both"].includes(webReady)) {
+      w.value = webReady;
+    }
+  }
   const action = params.get("action");
   if (action === "beam") {
     if (isReady() && url) {
@@ -5657,7 +5669,7 @@ function applyDeepLinkPrefill() {
     }
   }
   // Strip query string so a refresh doesn't re-submit.
-  if (url || filename || subfolder || quality || action) {
+  if (url || filename || subfolder || quality || webReady || action) {
     try {
       const clean = parsed.origin + parsed.pathname + parsed.hash;
       history.replaceState(null, "", clean);
@@ -6535,6 +6547,7 @@ const RunHistory = (() => {
     const subfolder = $("#subfolder");
     const quality = $("#quality");
     const ytdlpFormat = $("#ytdlp_format");
+    const webReady = $("#web_ready");
     if (url) url.value = entry.url || "";
     if (filename) filename.value = entry.filename || "";
     if (subfolder) subfolder.value = entry.subfolder || "";
@@ -6543,6 +6556,7 @@ const RunHistory = (() => {
       quality.dispatchEvent(new Event("change", { bubbles: true }));
     }
     if (ytdlpFormat) ytdlpFormat.value = entry.ytdlp_format || "";
+    if (webReady) webReady.value = entry.web_ready || "both";
     if (url) {
       url.dispatchEvent(new Event("input", { bubbles: true }));
       url.focus();
@@ -6719,6 +6733,7 @@ const WorkflowPresets = (() => {
       quality: ($("#quality") && $("#quality").value) || "auto",
       ytdlp_format:
         ($("#ytdlp_format") && $("#ytdlp_format").value.trim()) || "",
+      web_ready: ($("#web_ready") && $("#web_ready").value) || "both",
     };
   }
 
@@ -6728,6 +6743,7 @@ const WorkflowPresets = (() => {
     const subfolder = $("#subfolder");
     const quality = $("#quality");
     const ytdlp = $("#ytdlp_format");
+    const webReady = $("#web_ready");
     if (filename) filename.value = preset.filename || "";
     if (subfolder) subfolder.value = preset.subfolder || "";
     if (quality) {
@@ -6735,6 +6751,7 @@ const WorkflowPresets = (() => {
       quality.dispatchEvent(new Event("change", { bubbles: true }));
     }
     if (ytdlp) ytdlp.value = preset.ytdlp_format || "";
+    if (webReady) webReady.value = preset.web_ready || "both";
   }
 
   function renderSelect() {
@@ -6785,6 +6802,7 @@ const WorkflowPresets = (() => {
       body.appendChild(presetField("Файл", preset.filename || "—"));
       body.appendChild(presetField("Папка", preset.subfolder || "—"));
       body.appendChild(presetField("Качество", preset.quality || "auto"));
+      body.appendChild(presetField("Плеер", preset.web_ready || "both"));
       if (preset.ytdlp_format) {
         body.appendChild(presetField("yt-dlp", preset.ytdlp_format));
       }
@@ -6974,6 +6992,7 @@ const BulkQueue = (() => {
         subfolder: item.subfolder || "",
         quality: item.quality || "auto",
         ytdlp_format: item.ytdlp_format || "",
+        web_ready: item.web_ready || "both",
         status: STATUS.PENDING,
         attempts: 0,
         addedAt: Date.now(),
@@ -7047,12 +7066,13 @@ const BulkQueue = (() => {
       .filter(Boolean);
     const out = [];
     for (const line of lines) {
-      // Each line may be just a URL, or "URL | filename | subfolder | quality"
+      // Each line may be just a URL, or "URL | filename | subfolder | quality | web_ready"
       const parts = line.split(/\s*[|\t]\s*/);
       const item = { url: parts[0] || "" };
       if (parts[1]) item.filename = parts[1];
       if (parts[2]) item.subfolder = parts[2];
       if (parts[3]) item.quality = parts[3];
+      if (parts[4]) item.web_ready = parts[4];
       const cls = classifyUrl(item.url).kind;
       if (cls === "empty" || cls === "invalid" || cls === "kinopoisk") continue;
       out.push(item);
@@ -7072,6 +7092,7 @@ const BulkQueue = (() => {
       subfolder: entry.subfolder || "",
       quality: entry.quality || "auto",
       ytdlp_format: entry.ytdlp_format || "",
+      web_ready: entry.web_ready || "both",
     };
     try {
       await gh.dispatchWorkflow({ ref, inputs });
@@ -7776,7 +7797,7 @@ function bindAutoFillSuggestions() {
 //      transparently. The token is renewed every 30 minutes.
 //   3. Listing the files in the configured Drive folder (the same one
 //      the workflow uploads into) and rendering a clickable list.
-//   4. Opening a modal with `<video src="/_drive_proxy/<id>">` — the
+//   4. Opening a modal with `<video src="./_drive_proxy/<id>">` — the
 //      browser does standard Range requests against the SW proxy, which
 //      forwards them to Drive's `alt=media` endpoint. Drive supports
 //      Range natively, so seeking / variable-bitrate buffering work
@@ -8030,8 +8051,8 @@ const Player = (() => {
     // since the original may be MKV / HEVC and won't play natively.
     if (slot.web) return "web";
     if (slot.original && /\.mp4$/i.test(slot.original.name)) return "original";
-    if (slot.original) return "original";
     if (slot.lite) return "lite";
+    if (slot.original) return "original";
     return "original";
   }
 
@@ -8039,6 +8060,13 @@ const Player = (() => {
     if (source === "web" && slot.web) return slot.web;
     if (source === "lite" && slot.lite) return slot.lite;
     return slot.original || slot.web || slot.lite;
+  }
+
+  function driveProxyUrl(fileId) {
+    return new URL(
+      `./_drive_proxy/${encodeURIComponent(fileId)}`,
+      document.baseURI
+    ).toString();
   }
 
   function applySource(source) {
@@ -8052,7 +8080,7 @@ const Player = (() => {
       // Use the SW proxy. The browser will issue Range requests against
       // this same-origin URL; the SW rewrites them into authenticated
       // calls to Drive's alt=media endpoint.
-      video.src = `/_drive_proxy/${encodeURIComponent(file.id)}`;
+      video.src = driveProxyUrl(file.id);
       video.load();
     }
     if (lbl) {
@@ -8233,8 +8261,18 @@ const Player = (() => {
       video.addEventListener("stalled", () => updateBuffer("сеть упала"));
       video.addEventListener("error", () => {
         const err = video.error;
-        const code = err ? `code=${err.code}` : "unknown";
-        bufferState.textContent = `ошибка плеера (${code})`;
+        const code = err ? err.code : null;
+        const detail =
+          code === 4
+            ? "формат/источник не поддержан"
+            : code === 2
+            ? "сеть/Drive оборвали загрузку"
+            : code === 3
+            ? "браузер не смог декодировать"
+            : code === 1
+            ? "загрузка отменена"
+            : "неизвестно";
+        bufferState.textContent = `ошибка плеера (code=${code || "?"} — ${detail})`;
         // Auto-fallback: if the original failed (likely codec/container
         // mismatch in <video>) and we have a .web.mp4 sidecar, switch.
         if (_activeSlot && _activeSource === "original" && _activeSlot.web) {
