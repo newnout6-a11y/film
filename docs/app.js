@@ -36,6 +36,7 @@ const defaultCfg = {
   driveOauthClientId: "",
   driveOauthClientSecret: "",
   driveOauthRefreshToken: "",
+  driveOauthScope: "",
   // Tracker creds. Mirror what gets uploaded to GitHub Secrets so we can sync
   // them across devices and re-upload to Secrets on each new machine without
   // the user re-typing them.
@@ -45,6 +46,9 @@ const defaultCfg = {
     nnm: { user: "", pass: "" },
   },
 };
+
+const DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const DRIVE_FULL_SCOPE = "https://www.googleapis.com/auth/drive";
 
 // Cached result of branch autodetect, keyed by repo. Stores the *resolved*
 // branch we'd actually dispatch against (after the stale-default fallback).
@@ -78,6 +82,9 @@ function loadCfg() {
     if (!raw) return { ...defaultCfg };
     const parsed = JSON.parse(raw);
     const merged = { ...defaultCfg, ...parsed };
+    if (!merged.driveOauthScope && merged.driveOauthRefreshToken) {
+      merged.driveOauthScope = DRIVE_FILE_SCOPE;
+    }
     const migrated = migrateCfg(merged);
     // Persist the migration so it only happens once.
     if (migrated.branch !== (parsed.branch || "")) {
@@ -519,6 +526,10 @@ const SYNC_SCOPES =
   "https://www.googleapis.com/auth/drive.file " +
   "https://www.googleapis.com/auth/drive.readonly";
 
+function driveOauthScope() {
+  return cfg.driveOauthScope || DRIVE_FILE_SCOPE;
+}
+
 let _driveAccessToken = null; // { token, expiresAt }
 
 function pemToArrayBuffer(pem) {
@@ -551,15 +562,17 @@ function utf8ToBase64Url(str) {
 }
 
 // True when the user has run the in-app device-authorization flow and
-// we have a refresh token + client_id/secret stashed locally. This
-// covers both upload (the workflow uses the same creds) and browser
-// playback, so we prefer it over the legacy SA-JSON path.
+// we have a refresh token + client_id/secret stashed locally.
 function hasOauthDriveCreds() {
   return Boolean(
     cfg.driveOauthRefreshToken &&
       cfg.driveOauthClientId &&
       cfg.driveOauthClientSecret
   );
+}
+
+function canListDriveRoot() {
+  return hasOauthDriveCreds() && driveOauthScope() !== DRIVE_FILE_SCOPE;
 }
 
 // Exchange the saved refresh_token for a fresh access_token. Google's
@@ -598,11 +611,9 @@ async function refreshDriveOauthAccessToken() {
   return data.access_token;
 }
 
-// In-flight de-duplication: while a JWT exchange is running, parallel
-// callers (validateDriveAccess, checkDrive, Player rehydrate) get the
-// same Promise. Otherwise three buttons clicked in quick succession
-// produce three identical OAuth requests and Google starts replying
-// with 429.
+// In-flight de-duplication: while a Drive token exchange is running,
+// parallel callers get the same Promise instead of producing several
+// identical Google requests.
 let _driveAccessTokenInflight = null;
 async function getDriveAccessToken() {
   if (
@@ -779,7 +790,11 @@ function showSetupHint(show) {
 }
 
 function openSettings() {
-  $("#cfg-repo").value = cfg.repo || inferRepoFromUrl();
+  const repoInput = $("#cfg-repo");
+  if (repoInput) {
+    repoInput.value = cfg.repo || "";
+    repoInput.placeholder = inferRepoFromUrl() || "owner/repo";
+  }
   $("#cfg-branch").value = cfg.branch || "";
   $("#cfg-workflow").value = cfg.workflow || "download-to-drive.yml";
   $("#cfg-token").value = cfg.token || "";
@@ -924,6 +939,15 @@ function bindSettings() {
   });
   $("#settings-save").addEventListener("click", () => {
     const repo = $("#cfg-repo").value.trim();
+    const inferred = inferRepoFromUrl();
+    if (inferred && repo === inferred) {
+      toast(
+        "Это репозиторий сайта по URL. Укажи свой fork в формате owner/repo, иначе все аккаунты будут запускать один и тот же runner.",
+        "error",
+        7000
+      );
+      return;
+    }
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
       toast("Репозиторий должен быть в формате owner/repo.", "error");
       return;
@@ -1632,6 +1656,8 @@ function bindDriveOAuthUpload() {
       );
       toast("OAuth-токен Drive загружен в GitHub.", "success");
       tokenField.value = "";
+      cfg.driveOauthScope = DRIVE_FULL_SCOPE;
+      saveCfg(cfg);
       // Refresh the audit panel so the new GDRIVE_OAUTH_TOKEN row appears
       // without a manual page reload.
       try {
@@ -1654,33 +1680,18 @@ function bindDriveOAuthUpload() {
 }
 
 // ---------- Drive OAuth: in-app device authorization flow ----------
-// Personal @gmail.com accounts can't use Service Accounts (no quota) and
-// can't create Shared Drives (Workspace-only), so the only working path
-// is OAuth: writes happen as the user, files count against the user's
-// own quota. The previous flow asked users to install rclone locally and
-// paste a JSON blob; this one runs the entire OAuth handshake in-page
-// using Google's "device authorization" grant — same scheme as smart-TV
-// sign-in. The user clicks one button, scans/clicks a Google verification
-// link, presses Allow, and we receive the refresh token directly.
+// Personal @gmail.com accounts need OAuth so uploads count against the
+// user's own quota. Google's TV/device flow only allows a limited scope
+// set; the full `/auth/drive` scope is rejected with `invalid_scope`, so
+// the one-click browser path uses `/auth/drive.file`. That is enough for
+// the CI uploader to create files in the chosen folder. Full-folder
+// browsing still requires the rclone fallback (`/auth/drive`).
 //
-// Why we ask for a user-supplied OAuth client_id+secret:
-//   * Device-authorization grant requires the OAuth client to be of type
-//     "TVs and Limited Input devices". rclone's well-known public client
-//     is type "Other" and Google rejects /device/code calls against it
-//     with `invalid_client`. We can't ship a centralized TV client
-//     because the consent screen would surface our project name to the
-//     user and we'd own their refresh tokens — neither is acceptable for
-//     a static GitHub Pages app. So the user spends ~5 minutes once to
-//     register their own OAuth client and gets full data sovereignty.
-//   * We ALSO send the same client_id + client_secret to the workflow
-//     (as GDRIVE_OAUTH_CLIENT_ID/_SECRET) because rclone in CI needs
-//     them to refresh the access token at runtime. Without those, the
-//     CI run would hit `invalid_client` 403 the moment the access token
-//     expires (~1 hour into a long upload).
+// We ask for a user-owned TV OAuth client because the static GitHub Pages
+// app should not own central refresh tokens for everyone.
 const DRIVE_DEVICE_AUTH_ENDPOINT = "https://oauth2.googleapis.com/device/code";
 const DRIVE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const DRIVE_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
-const DRIVE_OAUTH_SCOPE = "https://www.googleapis.com/auth/drive";
 
 // Per-flow state that the cancel button mutates so the polling loop knows
 // to bail. We keep it module-scoped (not closed-over) so a second click on
@@ -1729,6 +1740,34 @@ async function _postOAuthForm(url, params) {
        res.status / res.statusText below to surface the failure. */
   }
   return { res, data };
+}
+
+async function createDriveAutomationFolder(accessToken) {
+  const res = await fetch(
+    "https://www.googleapis.com/drive/v3/files?fields=id,name",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "Film Beamer",
+        mimeType: "application/vnd.google-apps.folder",
+      }),
+    }
+  );
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+  if (!res.ok || !data || !data.id) {
+    const msg = data?.error?.message || `HTTP ${res.status}`;
+    throw new Error(`Не удалось автоматически создать папку Drive: ${msg}`);
+  }
+  return data;
 }
 
 let _deviceCountdownTimer = null;
@@ -1793,11 +1832,11 @@ function _closeDeviceModal() {
   }
 }
 
-async function startDriveDeviceFlow({ clientId, clientSecret }) {
+async function startDriveDeviceFlow({ clientId, clientSecret, scope }) {
   // Step 1: ask Google for a device_code + a short user_code we can show.
   const { res: deviceRes, data: device } = await _postOAuthForm(DRIVE_DEVICE_AUTH_ENDPOINT, {
     client_id: clientId,
-    scope: DRIVE_OAUTH_SCOPE,
+    scope,
   });
   if (!deviceRes.ok || !device || !device.device_code) {
     const errCode = device?.error || `HTTP ${deviceRes.status}`;
@@ -1949,6 +1988,7 @@ function bindDriveOAuthConnect() {
       return;
     }
 
+    const scope = DRIVE_FILE_SCOPE;
     let folderId = null;
     const folderRaw = folderField.value.trim();
     if (folderRaw) {
@@ -1966,7 +2006,7 @@ function bindDriveOAuthConnect() {
     setDriveConnectStatus("Запрашиваю код у Google…");
     let tokenData;
     try {
-      tokenData = await startDriveDeviceFlow({ clientId, clientSecret });
+      tokenData = await startDriveDeviceFlow({ clientId, clientSecret, scope });
     } catch (err) {
       _closeDeviceModal();
       btn.disabled = false;
@@ -1976,7 +2016,19 @@ function bindDriveOAuthConnect() {
     }
 
     _closeDeviceModal();
-    setDriveConnectStatus("Готово! Шифрую и сохраняю секреты в GitHub…");
+    if (!folderId) {
+      setDriveConnectStatus("Готово! Создаю папку Film Beamer в Drive…");
+      try {
+        const folder = await createDriveAutomationFolder(tokenData.access_token);
+        folderId = folder.id;
+        folderField.value = folderId;
+      } catch (err) {
+        btn.disabled = false;
+        setDriveConnectStatus(err.message || String(err), "error");
+        return;
+      }
+    }
+    setDriveConnectStatus("Шифрую и сохраняю секреты в GitHub…");
 
     // Build an rclone-format token JSON so the workflow's existing OAuth
     // step (which feeds `token = …` straight into rclone.conf) keeps
@@ -2009,13 +2061,12 @@ function bindDriveOAuthConnect() {
         const v4 = await uploadGitHubSecret("GDRIVE_FOLDER_ID", folderId);
         uploaded.push(`GDRIVE_FOLDER_ID (${formatSecretTs(v4)})`);
       }
-      // Persist the same creds locally so the in-page player can read
-      // Drive without a separate service-account JSON. The OAuth scope
-      // we requested (drive) covers both read and write, so one
-      // device-auth grants everything the UI needs from this point on.
+      // Persist the same creds locally so refreshes and future secret
+      // re-uploads do not require repeating Google's device prompt.
       cfg.driveOauthClientId = clientId;
       cfg.driveOauthClientSecret = clientSecret;
       cfg.driveOauthRefreshToken = tokenData.refresh_token;
+      cfg.driveOauthScope = scope;
       if (folderId) cfg.driveFolderId = folderId;
       saveCfg(cfg);
       // Invalidate any cached SA-based access_token so the next request
@@ -2024,7 +2075,7 @@ function bindDriveOAuthConnect() {
       setDriveConnectStatus(
         `Подключено. В GitHub Secrets записано: ${uploaded.join(
           "; "
-        )}. Плеер теперь читает Drive сам, без сервис-аккаунта.`,
+        )}. Загрузки будут работать через безопасный scope drive.file.`,
         "success"
       );
       toast("Google Drive подключён.", "success");
@@ -5266,6 +5317,15 @@ function _safeOpenHandler(label, getter) {
 }
 
 function bindHeaderActionButtons() {
+  const guide = $("#open-guide");
+  if (guide) {
+    guide.addEventListener("click", () => {
+      if (typeof OnboardingGuide !== "undefined" && OnboardingGuide) {
+        OnboardingGuide.show();
+        OnboardingGuide.refresh();
+      }
+    });
+  }
   const help = $("#open-help");
   if (help) {
     help.addEventListener(
@@ -7208,7 +7268,12 @@ const HelpDialog = (() => {
 // user signs in; this is a manual escape hatch for "I want to email this
 // to a friend" or "I'm switching browsers before signing up".
 const SettingsBackup = (() => {
-  const REDACTED = ["token"];
+  const REDACTED = [
+    "token",
+    "driveOauthClientSecret",
+    "driveOauthRefreshToken",
+    "trackers",
+  ];
   const PRIVATE = ["driveSaJson"];
 
   function snapshot(opts = {}) {
@@ -7657,6 +7722,11 @@ const Player = (() => {
         "Сначала укажи Drive-папку в настройках («Папка Google Drive»)."
       );
     }
+    if (!canListDriveRoot()) {
+      throw new Error(
+        "Плеер не может перечислить папку при безопасном scope drive.file. Открой загруженный файл из ссылки в истории GitHub Actions или подключи Drive через rclone authorize \"drive\" для полного просмотра."
+      );
+    }
     const token = await ensureToken();
     // The query is intentionally permissive: we filter by file-extension
     // on the client side so files Drive can't classify still surface.
@@ -7937,7 +8007,7 @@ const Player = (() => {
       }
       if (!cfg.driveFolderId) {
         setStatus(
-          "Не указана папка Drive. Открой Настройки и вставь URL папки (Подключить Google Drive).",
+          "Не указана папка Drive. Открой Настройки и вставь URL папки.",
           "warn"
         );
         try {
@@ -7949,6 +8019,13 @@ const Player = (() => {
         } catch {
           /* noop */
         }
+        return;
+      }
+      if (!canListDriveRoot()) {
+        setStatus(
+          "Безопасное подключение drive.file загрузку чинит, но плеер не может сканировать папку. Для плеера нужен JSON от rclone authorize \"drive\".",
+          "warn"
+        );
         return;
       }
       await ensureToken({ force: true });
@@ -8034,6 +8111,7 @@ const Player = (() => {
   // just works on every subsequent visit.
   async function rehydrate() {
     if (!hasOauthDriveCreds() && !cfg.driveSaJson) return;
+    if (hasOauthDriveCreds() && !canListDriveRoot()) return;
     try {
       await ensureToken();
     } catch {
@@ -8103,32 +8181,11 @@ const Player = (() => {
 //   2. github (repo + PAT in cfg)
 //   3. drive  (OAuth refresh token OR SA JSON in cfg)
 //   4. beam   (paste a URL — never marked done; just a hand-off step)
-//
-// Visibility rules:
-//   - Hidden when the user has explicitly dismissed it (dismiss flag in
-//     localStorage, intentionally NOT cleared by resetAccountLocalState
-//     because dismissal is a per-device preference).
-//   - Hidden when all three setup steps are done — the user knows the
-//     drill at that point.
-//   - Re-shown on sign-out (SupabaseAuth.signOut() explicitly calls
-//     OnboardingGuide.show()) so the next person at the browser sees it.
 const OnboardingGuide = (() => {
-  const DISMISS_KEY = "film-beamer.guide-dismissed.v1";
+  let _manualHidden = false;
 
-  function _isDismissed() {
-    try {
-      return localStorage.getItem(DISMISS_KEY) === "1";
-    } catch {
-      return false;
-    }
-  }
-  function _setDismissed(on) {
-    try {
-      if (on) localStorage.setItem(DISMISS_KEY, "1");
-      else localStorage.removeItem(DISMISS_KEY);
-    } catch {
-      /* noop */
-    }
+  function _setManualHidden(on) {
+    _manualHidden = !!on;
   }
 
   function _stepAccount() {
@@ -8191,7 +8248,7 @@ const OnboardingGuide = (() => {
     // beam apart from the user just clicking around. Stays "pending"
     // until the user dismisses the whole guide.
     const everythingDone = acc && gh && dr;
-    if (_isDismissed() || everythingDone) {
+    if (_manualHidden || everythingDone) {
       sec.classList.add("hidden");
     } else {
       sec.classList.remove("hidden");
@@ -8199,7 +8256,7 @@ const OnboardingGuide = (() => {
   }
 
   function show() {
-    _setDismissed(false);
+    _setManualHidden(false);
     const sec = document.getElementById("onboarding-guide");
     if (sec) sec.classList.remove("hidden");
   }
@@ -8265,7 +8322,7 @@ const OnboardingGuide = (() => {
     const dismiss = document.getElementById("guide-dismiss");
     if (dismiss) {
       dismiss.addEventListener("click", () => {
-        _setDismissed(true);
+        _setManualHidden(true);
         sec.classList.add("hidden");
       });
     }
@@ -8573,6 +8630,21 @@ const SupabaseAuth = (() => {
     }
   }
 
+  async function purgeRemoteConfig() {
+    if (!_session) return false;
+    if (!(await _refreshIfNeeded())) return false;
+    const uid = _session.user && _session.user.id;
+    if (!uid) return false;
+    await _request(
+      `/rest/v1/user_configs?user_id=eq.${encodeURIComponent(uid)}`,
+      {
+        method: "DELETE",
+        headers: { Prefer: "return=minimal" },
+      }
+    );
+    return true;
+  }
+
   function schedulePush() {
     if (_pushTimer) clearTimeout(_pushTimer);
     _pushTimer = setTimeout(() => {
@@ -8702,6 +8774,7 @@ const SupabaseAuth = (() => {
     const signinBtn = $("#login-signin-btn");
     const signupBtn = $("#login-signup-btn");
     const signoutBtn = $("#login-signout-btn");
+    const purgeBtn = $("#login-purge-config-btn");
     const errEl = $("#login-error");
 
     function openDialog() {
@@ -8783,6 +8856,29 @@ const SupabaseAuth = (() => {
         signoutBtn.disabled = false;
       }
     });
+    purgeBtn?.addEventListener("click", async () => {
+      if (
+        !confirm(
+          "Удалить облачную копию настроек этого аккаунта из Supabase? Локальные настройки в этом браузере тоже очистятся."
+        )
+      ) {
+        return;
+      }
+      purgeBtn.disabled = true;
+      try {
+        if (errEl) errEl.textContent = "";
+        await purgeRemoteConfig();
+        resetAccountLocalState();
+        _rehydrateUIFromCfg();
+        _renderUI();
+        closeDialog();
+        toast("Облачные настройки удалены.", "success", 3500);
+      } catch (err) {
+        if (errEl) errEl.textContent = err.message || String(err);
+      } finally {
+        purgeBtn.disabled = false;
+      }
+    });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && dlg && !dlg.classList.contains("hidden")) {
         closeDialog();
@@ -8811,6 +8907,7 @@ const SupabaseAuth = (() => {
     signOut,
     pull,
     push,
+    purgeRemoteConfig,
     schedulePush,
     isLoggedIn,
     isPulling,
@@ -8873,8 +8970,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Pre-fill repo from URL if not configured yet.
   if (!cfg.repo) {
-    const guessed = inferRepoFromUrl();
-    if (guessed) cfg.repo = guessed;
+    $("#cfg-repo")?.setAttribute("placeholder", inferRepoFromUrl() || "owner/repo");
   }
 
   ensureRepoLink();

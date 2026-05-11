@@ -249,9 +249,11 @@ jobs:
           {
             printf '%s\n' '[gdrive]'
             printf '%s\n' 'type = drive'
-            printf '%s\n' 'scope = drive'
             if [ -n "${GDRIVE_OAUTH_CLIENT_ID:-}" ]; then
+              printf '%s\n' 'scope = drive.file'
               printf 'client_id = %s\n' "$GDRIVE_OAUTH_CLIENT_ID"
+            else
+              printf '%s\n' 'scope = drive'
             fi
             if [ -n "${GDRIVE_OAUTH_CLIENT_SECRET:-}" ]; then
               printf 'client_secret = %s\n' "$GDRIVE_OAUTH_CLIENT_SECRET"
