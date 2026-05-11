@@ -98,10 +98,10 @@ jobs:
           format=""
           extract_audio="false"
           case "${QUALITY:-auto}" in
-            auto)   format="bv*+ba/b" ;;
-            1080p)  format="bv*[height<=1080]+ba/b[height<=1080]" ;;
-            720p)   format="bv*[height<=720]+ba/b[height<=720]" ;;
-            480p)   format="bv*[height<=480]+ba/b[height<=480]" ;;
+            auto)   format="bv*[vcodec^=avc1][ext=mp4]+ba[acodec^=mp4a][ext=m4a]/b[vcodec^=avc1][ext=mp4]/bv*+ba/b" ;;
+            1080p)  format="bv*[height<=1080][vcodec^=avc1][ext=mp4]+ba[acodec^=mp4a][ext=m4a]/b[height<=1080][vcodec^=avc1][ext=mp4]/bv*[height<=1080]+ba/b[height<=1080]" ;;
+            720p)   format="bv*[height<=720][vcodec^=avc1][ext=mp4]+ba[acodec^=mp4a][ext=m4a]/b[height<=720][vcodec^=avc1][ext=mp4]/bv*[height<=720]+ba/b[height<=720]" ;;
+            480p)   format="bv*[height<=480][vcodec^=avc1][ext=mp4]+ba[acodec^=mp4a][ext=m4a]/b[height<=480][vcodec^=avc1][ext=mp4]/bv*[height<=480]+ba/b[height<=480]" ;;
             audio)  format="ba/b"; extract_audio="true" ;;
             custom) format="${CUSTOM_FORMAT:-bv*+ba/b}" ;;
             *)      format="bv*+ba/b" ;;
