@@ -376,7 +376,18 @@ async function uploadGitHubSecret(name, value) {
 // pulls down from the blob.
 
 const SYNC_FILENAME = "film-beamer-config.json";
-const SYNC_SCOPES = "https://www.googleapis.com/auth/drive.file";
+// We bundle two scopes onto the same SA JWT:
+//   * `drive.file`     — needed for read/write of the sync config blob
+//                        (films-beamer creates and re-edits that file).
+//   * `drive.readonly` — needed for the in-page video player to list and
+//                        stream files that were uploaded by rclone using
+//                        the user's OAuth token (which the SA does not
+//                        own). The user must share the target Drive
+//                        folder with the SA email for this to work.
+// Multiple scopes are space-separated per RFC 6749.
+const SYNC_SCOPES =
+  "https://www.googleapis.com/auth/drive.file " +
+  "https://www.googleapis.com/auth/drive.readonly";
 
 let _driveAccessToken = null; // { token, expiresAt }
 
@@ -1022,80 +1033,109 @@ function explainDispatchError(err, ref) {
   return raw;
 }
 
-function bindForm() {
-  $("#beam-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const errEl = $("#form-error");
-    errEl.textContent = "";
+async function submitBeam({ qualityOverride = null, toastLabel = null } = {}) {
+  const errEl = $("#form-error");
+  errEl.textContent = "";
 
-    if (!isReady()) {
-      showSetupHint(true);
-      openSettings();
-      return;
-    }
+  if (!isReady()) {
+    showSetupHint(true);
+    openSettings();
+    return;
+  }
 
-    const rawUrl = $("#url").value.trim();
-    const quality = $("#quality").value || "auto";
-    const customFormat = $("#ytdlp_format").value.trim();
-    const inputs = {
-      url: rawUrl,
-      filename: $("#filename").value.trim(),
-      subfolder: $("#subfolder").value.trim(),
-      quality,
-      ytdlp_format: quality === "custom" ? customFormat || "bv*+ba/b" : "",
-    };
+  const rawUrl = $("#url").value.trim();
+  const quality = qualityOverride || $("#quality").value || "auto";
+  const customFormat = $("#ytdlp_format").value.trim();
+  const inputs = {
+    url: rawUrl,
+    filename: $("#filename").value.trim(),
+    subfolder: $("#subfolder").value.trim(),
+    quality,
+    ytdlp_format: quality === "custom" ? customFormat || "bv*+ba/b" : "",
+  };
 
-    const cls = classifyUrl(rawUrl).kind;
-    if (cls === "empty" || cls === "invalid") {
-      errEl.textContent =
-        "Ссылка должна начинаться с http(s):// или magnet:?";
-      return;
-    }
-    if (cls === "kinopoisk") {
-      errEl.textContent =
-        "Кинопоиск не хостит видео. Скопируй magnet с RuTracker или ссылку с Rutube/YouTube.";
-      return;
-    }
+  const cls = classifyUrl(rawUrl).kind;
+  if (cls === "empty" || cls === "invalid") {
+    errEl.textContent = "Ссылка должна начинаться с http(s):// или magnet:?";
+    return;
+  }
+  if (cls === "kinopoisk") {
+    errEl.textContent =
+      "Кинопоиск не хостит видео. Скопируй magnet с RuTracker или ссылку с Rutube/YouTube.";
+    return;
+  }
+  if (
+    quality === "audio" &&
+    (cls === "magnet" || cls === "torrent" || cls === "direct")
+  ) {
+    // The audio preset only affects yt-dlp downloads. For magnets / direct
+    // file URLs we have no extraction step — warn rather than dispatch a
+    // run that will silently produce a video.
+    errEl.textContent =
+      "Режим «mp3» работает только для yt-dlp-сайтов (YouTube/SoundCloud/…). Для торрентов и прямых ссылок раннер качает файл как есть.";
+    return;
+  }
 
-    const btn = $("#beam-btn");
-    btn.disabled = true;
-    const lbl = $("#beam-btn-label");
-    const oldLabel = lbl.textContent;
-    lbl.textContent = "Отправляем…";
+  const beamBtn = $("#beam-btn");
+  const mp3Btn = $("#beam-mp3-btn");
+  beamBtn.disabled = true;
+  if (mp3Btn) mp3Btn.disabled = true;
+  const lbl = $("#beam-btn-label");
+  const oldLabel = lbl.textContent;
+  lbl.textContent = "Отправляем…";
 
-    let ref = null;
-    try {
-      const gh = new GitHubClient(cfg);
-      ref = await resolveBranch();
-      if (!ref) {
-        throw new Error(
-          "Не получилось определить ветку репо — укажи её вручную в Настройках."
-        );
-      }
-      // Snapshot existing run ids so trackDispatchedRun can find the new
-      // one by id (clock-skew-proof).
-      const knownRunIds = await snapshotRunIds(gh, cfg.workflow);
-      const dispatchedAt = Date.now();
-      await gh.dispatchWorkflow({ ref, inputs });
-      toast("Запущено — раннер качает…", "success");
-      $("#url").value = "";
-      // GitHub sometimes takes a beat to register the run.
-      setTimeout(() => refreshRuns(true), 1500);
-      // Open the live progress modal so the user sees actual stage transitions.
-      openProgressDialog("Закидываем на Drive");
-      trackDispatchedRun(cfg.workflow, dispatchedAt, "Закидывание", knownRunIds).catch(
-        () => {}
+  let ref = null;
+  try {
+    const gh = new GitHubClient(cfg);
+    ref = await resolveBranch();
+    if (!ref) {
+      throw new Error(
+        "Не получилось определить ветку репо — укажи её вручную в Настройках."
       );
-    } catch (err) {
-      console.error(err);
-      const msg = explainDispatchError(err, ref);
-      errEl.textContent = msg;
-      toast(`Ошибка: ${msg}`, "error");
-    } finally {
-      btn.disabled = false;
-      lbl.textContent = oldLabel;
     }
+    // Snapshot existing run ids so trackDispatchedRun can find the new
+    // one by id (clock-skew-proof).
+    const knownRunIds = await snapshotRunIds(gh, cfg.workflow);
+    const dispatchedAt = Date.now();
+    await gh.dispatchWorkflow({ ref, inputs });
+    toast(toastLabel || "Запущено — раннер качает…", "success");
+    $("#url").value = "";
+    setTimeout(() => refreshRuns(true), 1500);
+    openProgressDialog(
+      quality === "audio" ? "Качаем mp3" : "Закидываем на Drive"
+    );
+    trackDispatchedRun(
+      cfg.workflow,
+      dispatchedAt,
+      quality === "audio" ? "MP3-заброс" : "Закидывание",
+      knownRunIds
+    ).catch(() => {});
+  } catch (err) {
+    console.error(err);
+    const msg = explainDispatchError(err, ref);
+    errEl.textContent = msg;
+    toast(`Ошибка: ${msg}`, "error");
+  } finally {
+    beamBtn.disabled = false;
+    if (mp3Btn) mp3Btn.disabled = false;
+    lbl.textContent = oldLabel;
+  }
+}
+
+function bindForm() {
+  $("#beam-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    submitBeam();
   });
+  const mp3Btn = $("#beam-mp3-btn");
+  if (mp3Btn) {
+    mp3Btn.addEventListener("click", () => {
+      submitBeam({
+        qualityOverride: "audio",
+        toastLabel: "Запущено — раннер вытаскивает mp3…",
+      });
+    });
+  }
 }
 
 function statusKey(run) {
@@ -7489,6 +7529,24 @@ const URLClassifierExt = (() => {
     "thepiratebay10.org",
   ]);
 
+  // Domains that almost certainly mean "I want audio", not video. Pasting
+  // a soundcloud.com / bandcamp.com / music.youtube.com URL into the form
+  // with the default "auto" quality used to silently download a video
+  // file (e.g. a YouTube Music backdrop). We now switch the dropdown to
+  // "audio" automatically for these hosts — unless the user has manually
+  // picked something else, see `bindAutoFillSuggestions` below.
+  const MUSIC_HOSTS = new Set([
+    "music.youtube.com",
+    "soundcloud.com",
+    "m.soundcloud.com",
+    "bandcamp.com",
+    "mixcloud.com",
+    "audiomack.com",
+    "audiotool.com",
+    "deezer.com",
+    "music.yandex.ru",
+  ]);
+
   function hostOf(raw) {
     try {
       return new URL(raw).hostname.toLowerCase();
@@ -7504,6 +7562,9 @@ const URLClassifierExt = (() => {
     if (/\.torrent(\?|$)/i.test(url)) return "torrent";
     if (!/^https?:\/\//i.test(url)) return "invalid";
     const host = hostOf(url);
+    for (const h of MUSIC_HOSTS) {
+      if (host === h || host.endsWith("." + h)) return "music";
+    }
     for (const h of TRACKER_HOSTS) {
       if (host === h || host.endsWith("." + h)) return "tracker-page";
     }
@@ -7536,6 +7597,7 @@ const URLClassifierExt = (() => {
 
   function suggestedQuality(raw) {
     const cat = category(raw);
+    if (cat === "music") return "audio";
     if (cat === "magnet" || cat === "torrent" || cat === "direct") return "auto";
     if (cat !== "video") return "auto";
     const host = hostOf(raw);
@@ -7548,6 +7610,8 @@ const URLClassifierExt = (() => {
     switch (cat) {
       case "video":
         return "Видео-сайт — yt-dlp.";
+      case "music":
+        return "Музыкальный сайт — yt-dlp в режиме аудио (mp3).";
       case "magnet":
         return "Magnet — aria2c (BitTorrent).";
       case "torrent":
@@ -7591,15 +7655,23 @@ function bindAutoFillSuggestions() {
   const url = $("#url");
   const filename = $("#filename");
   const quality = $("#quality");
+  const note = $("#quality-auto-note");
   if (!url || !filename) return;
   let lastUserFilename = "";
+  let userTouchedQuality = false;
   filename.addEventListener("input", () => {
     lastUserFilename = filename.value;
   });
-  url.addEventListener("input", () => {
+  if (quality) {
+    // Any explicit change by the user freezes the auto-suggest so we don't
+    // fight a deliberate choice.
+    quality.addEventListener("change", () => {
+      userTouchedQuality = true;
+      if (note) note.textContent = "";
+    });
+  }
+  const apply = () => {
     const meta = URLClassifierExt.metadata(url.value.trim());
-    // Only autofill when the field is empty *and* the user hasn't typed
-    // anything custom there yet.
     if (!filename.value || filename.value === lastUserFilename) {
       const suggested = meta.filename;
       if (suggested && suggested !== filename.value) {
@@ -7608,17 +7680,504 @@ function bindAutoFillSuggestions() {
         filename.placeholder = "авто (имя сохраним из источника)";
       }
     }
-    if (
-      quality &&
-      meta.quality &&
-      meta.quality !== "auto" &&
-      quality.value === "auto"
-    ) {
-      // Just hint via title; never override silently.
+    if (!quality) return;
+    if (note) note.textContent = "";
+    if (userTouchedQuality) return;
+    if (!meta.quality) return;
+
+    if (meta.category === "music" && quality.value !== "audio") {
+      // Music URL pasted into a form still set to "auto" used to silently
+      // produce a video file. Switch to audio and tell the user we did.
+      quality.value = "audio";
+      if (note) {
+        note.textContent =
+          "Похоже на музыкальный сайт — выбран режим «Только аудио (mp3)». Поменяй вручную, если нужно видео.";
+      }
+      return;
+    }
+    if (meta.quality !== "auto" && quality.value === "auto") {
+      // Soft hint for the YouTube 1080p case — title only, no value change.
       quality.title = `Подсказка: ${meta.quality} для ${meta.host}`;
     }
-  });
+  };
+  url.addEventListener("input", apply);
+  url.addEventListener("paste", () => setTimeout(apply, 0));
 }
+
+// ---------- Drive playback ----------
+//
+// The Player module gives the PWA its own video viewer so the user no
+// longer has to rely on drive.google.com's preview popup (which only
+// supports h264/aac mp4, has its own transcode queue, and stalls on
+// flaky connections). It works by:
+//
+//   1. Asking the Service Account JWT machinery for an access_token that
+//      covers `drive.readonly`. The same SA token bundled `drive.file`
+//      already, so we expanded SYNC_SCOPES rather than spinning up a
+//      second JWT round-trip.
+//   2. Pushing that token into the Service Worker via postMessage so
+//      `/_drive_proxy/<id>` requests get an Authorization header attached
+//      transparently. The token is renewed every 30 minutes.
+//   3. Listing the files in the configured Drive folder (the same one
+//      the workflow uploads into) and rendering a clickable list.
+//   4. Opening a modal with `<video src="/_drive_proxy/<id>">` — the
+//      browser does standard Range requests against the SW proxy, which
+//      forwards them to Drive's `alt=media` endpoint. Drive supports
+//      Range natively, so seeking / variable-bitrate buffering work
+//      with no extra code on our side.
+//   5. Picking a `.web.mp4` sidecar (lossless remux for h264 sources,
+//      or a 720p transcode) when one exists, so MKV / HEVC / VP9 files
+//      still play in every browser. A separate `.lite.mp4` toggle lets
+//      the user drop to 480p ~800k for very weak connections.
+const Player = (() => {
+  // ---------------- internals ----------------
+
+  // Allowed video file extensions in the listing. We intentionally do NOT
+  // rely on `mimeType` alone because Drive sometimes returns generic
+  // application/octet-stream for files uploaded via rclone in chunked mode.
+  const VIDEO_EXT_RE = /\.(mp4|mkv|webm|avi|mov|m4v|ts|m2ts|flv|wmv)$/i;
+  const LIST_PAGE_SIZE = 200;
+
+  let _grouped = []; // grouped: [{ key, name, original, web, lite }]
+  let _pendingTokenRefresh = null; // de-dupe concurrent token requests
+  let _tokenRefreshTimer = null; // schedules the 30-minute re-issue
+  let _bound = false; // bindOnce guard
+
+  function el(id) {
+    return document.getElementById(id);
+  }
+
+  function setStatus(text, kind = "info") {
+    const s = el("player-status");
+    if (!s) return;
+    s.textContent = text || "";
+    s.className =
+      "text-xs " +
+      (kind === "success"
+        ? "text-emerald-300"
+        : kind === "error"
+        ? "text-rose-300"
+        : kind === "warn"
+        ? "text-amber-300"
+        : "text-slate-400");
+  }
+
+  // Push the latest Drive Bearer token to the Service Worker. Without this,
+  // /_drive_proxy/* requests would 401 because the SW has no other way to
+  // learn what credentials to use.
+  async function postTokenToSW(token) {
+    try {
+      const reg = await navigator.serviceWorker?.ready;
+      const sw = reg?.active || navigator.serviceWorker?.controller;
+      if (!sw) {
+        // We're probably on first load before the SW is controlling this
+        // page yet. The video element would still hit network directly,
+        // but it won't get past CORS without an auth header. Best we can
+        // do is queue the token and re-try when SW is ready.
+        navigator.serviceWorker?.addEventListener(
+          "controllerchange",
+          () => postTokenToSW(token),
+          { once: true }
+        );
+        return;
+      }
+      sw.postMessage({ type: "DRIVE_TOKEN", token: token || "" });
+    } catch (err) {
+      // Non-fatal — the player will surface a 401 from the proxy if the
+      // token never makes it through.
+      console.warn("Player: failed to push token to SW", err);
+    }
+  }
+
+  // Wrapper around `getDriveAccessToken` that also pushes the token to the
+  // SW and schedules an early refresh. Returns the bare token string for
+  // use in API calls made from the page itself (which don't go through
+  // the SW).
+  async function ensureToken({ force = false } = {}) {
+    if (_pendingTokenRefresh) return _pendingTokenRefresh;
+    _pendingTokenRefresh = (async () => {
+      if (force) _driveAccessToken = null;
+      const token = await getDriveAccessToken();
+      await postTokenToSW(token);
+      if (_tokenRefreshTimer) clearTimeout(_tokenRefreshTimer);
+      // Re-issue every 30 minutes; SA tokens live for 1h.
+      _tokenRefreshTimer = setTimeout(() => {
+        ensureToken({ force: true }).catch((err) => {
+          console.warn("Player: token refresh failed", err);
+        });
+      }, 30 * 60 * 1000);
+      return token;
+    })();
+    try {
+      return await _pendingTokenRefresh;
+    } finally {
+      _pendingTokenRefresh = null;
+    }
+  }
+
+  // List all video-ish files inside cfg.driveFolderId. Pages until exhausted.
+  async function listVideos() {
+    if (!cfg.driveFolderId) {
+      throw new Error(
+        "Сначала укажи Drive-папку в настройках («Папка Google Drive»)."
+      );
+    }
+    const token = await ensureToken();
+    // The query is intentionally permissive: we filter by file-extension
+    // on the client side so files Drive can't classify still surface.
+    const q =
+      `'${cfg.driveFolderId.replace(/'/g, "\\'")}' in parents and trashed=false`;
+    const fields =
+      "nextPageToken,files(id,name,size,mimeType,modifiedTime," +
+      "videoMediaMetadata(durationMillis,width,height),thumbnailLink," +
+      "iconLink,owners(emailAddress,displayName))";
+    const items = [];
+    let pageToken = null;
+    do {
+      const params = new URLSearchParams({
+        q,
+        fields,
+        pageSize: String(LIST_PAGE_SIZE),
+        orderBy: "modifiedTime desc",
+        supportsAllDrives: "true",
+        includeItemsFromAllDrives: "true",
+      });
+      if (pageToken) params.set("pageToken", pageToken);
+      const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files?${params.toString()}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!res.ok) {
+        const text = await res.text();
+        let hint = "";
+        if (res.status === 403) {
+          hint =
+            " — у сервис-аккаунта нет доступа к папке. Расшарь папку на " +
+            "email сервис-аккаунта (раздел «Загрузить ключ Google Drive»).";
+        } else if (res.status === 401) {
+          hint = " — токен Drive протух, попробуй кнопку «Включить просмотр» ещё раз.";
+        }
+        throw new Error(`Drive list ${res.status}: ${text}${hint}`);
+      }
+      const data = await res.json();
+      if (Array.isArray(data.files)) items.push(...data.files);
+      pageToken = data.nextPageToken || null;
+    } while (pageToken);
+    return items.filter(
+      (f) => VIDEO_EXT_RE.test(f.name || "") || /^video\//.test(f.mimeType || "")
+    );
+  }
+
+  // Group originals with their `.web.mp4` / `.lite.mp4` sidecars produced
+  // by the workflow's "Web-ready" step. We key by basename minus those
+  // suffixes so the UI shows one row per logical video.
+  function groupSidecars(files) {
+    const byKey = new Map();
+    function keyOf(name) {
+      const lower = name.toLowerCase();
+      if (lower.endsWith(".web.mp4")) return name.slice(0, -".web.mp4".length);
+      if (lower.endsWith(".lite.mp4")) return name.slice(0, -".lite.mp4".length);
+      // strip "regular" extension
+      const dot = name.lastIndexOf(".");
+      return dot > 0 ? name.slice(0, dot) : name;
+    }
+    for (const f of files) {
+      const k = keyOf(f.name || "");
+      const slot = byKey.get(k) || { key: k, original: null, web: null, lite: null };
+      const lower = (f.name || "").toLowerCase();
+      if (lower.endsWith(".web.mp4")) slot.web = f;
+      else if (lower.endsWith(".lite.mp4")) slot.lite = f;
+      else slot.original = f;
+      byKey.set(k, slot);
+    }
+    // If a sidecar was uploaded without its parent (e.g. user deleted the
+    // mkv but kept the web.mp4), promote the sidecar to original.
+    for (const slot of byKey.values()) {
+      if (!slot.original) slot.original = slot.web || slot.lite;
+    }
+    return Array.from(byKey.values())
+      .map((s) => ({
+        ...s,
+        name: s.key,
+        sortTime: new Date(
+          (s.original || s.web || s.lite).modifiedTime || 0
+        ).getTime(),
+      }))
+      .sort((a, b) => b.sortTime - a.sortTime);
+  }
+
+  function humanSize(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return `${n} B`;
+    const units = ["KB", "MB", "GB", "TB"];
+    let i = -1;
+    do {
+      n /= 1024;
+      i++;
+    } while (n >= 1024 && i < units.length - 1);
+    return `${n.toFixed(n < 10 ? 1 : 0)} ${units[i]}`;
+  }
+
+  function renderList() {
+    const list = el("player-list");
+    const empty = el("player-empty");
+    if (!list) return;
+    list.innerHTML = "";
+    if (!_grouped.length) {
+      if (empty) empty.classList.remove("hidden");
+      return;
+    }
+    if (empty) empty.classList.add("hidden");
+    for (const slot of _grouped) {
+      const f = slot.original;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className =
+        "group flex w-full items-center gap-3 rounded-xl border border-white/10 bg-ink-900/40 px-3 py-2 text-left hover:border-accent-500/40 hover:bg-ink-900";
+      const title = document.createElement("div");
+      title.className = "min-w-0 flex-1";
+      const top = document.createElement("div");
+      top.className = "truncate text-sm font-medium text-slate-100";
+      top.textContent = slot.name || f.name;
+      const sub = document.createElement("div");
+      sub.className = "truncate text-xs text-slate-500";
+      const bits = [humanSize(f.size)];
+      const meta = f.videoMediaMetadata;
+      if (meta && meta.width && meta.height) {
+        bits.push(`${meta.width}×${meta.height}`);
+      }
+      if (slot.web) bits.push("есть .web.mp4");
+      if (slot.lite) bits.push("есть .lite.mp4");
+      sub.textContent = bits.join(" · ");
+      title.appendChild(top);
+      title.appendChild(sub);
+      const playLabel = document.createElement("span");
+      playLabel.className =
+        "rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-200 group-hover:bg-white/10";
+      playLabel.textContent = "Смотреть ▶";
+      row.appendChild(title);
+      row.appendChild(playLabel);
+      row.addEventListener("click", () => open(slot));
+      list.appendChild(row);
+    }
+  }
+
+  // ---- player modal ----
+
+  let _activeSlot = null;
+  let _activeSource = "original"; // 'original' | 'web' | 'lite'
+
+  function pickInitialSource(slot) {
+    // Prefer .web.mp4 (always streamable in <video>) when it exists,
+    // since the original may be MKV / HEVC and won't play natively.
+    if (slot.web) return "web";
+    if (slot.original && /\.mp4$/i.test(slot.original.name)) return "original";
+    if (slot.original) return "original";
+    if (slot.lite) return "lite";
+    return "original";
+  }
+
+  function fileForSource(slot, source) {
+    if (source === "web" && slot.web) return slot.web;
+    if (source === "lite" && slot.lite) return slot.lite;
+    return slot.original || slot.web || slot.lite;
+  }
+
+  function applySource(source) {
+    if (!_activeSlot) return;
+    const file = fileForSource(_activeSlot, source);
+    if (!file) return;
+    _activeSource = source;
+    const video = el("player-video");
+    const lbl = el("player-source-label");
+    if (video) {
+      // Use the SW proxy. The browser will issue Range requests against
+      // this same-origin URL; the SW rewrites them into authenticated
+      // calls to Drive's alt=media endpoint.
+      video.src = `/_drive_proxy/${encodeURIComponent(file.id)}`;
+      video.load();
+    }
+    if (lbl) {
+      lbl.textContent =
+        source === "web"
+          ? `.web.mp4 (${humanSize(file.size)})`
+          : source === "lite"
+          ? `.lite.mp4 — 480p (${humanSize(file.size)})`
+          : `оригинал (${humanSize(file.size)})`;
+    }
+    const sub = el("player-subtitle");
+    if (sub) sub.textContent = file.name;
+  }
+
+  function open(slot) {
+    _activeSlot = slot;
+    _activeSource = pickInitialSource(slot);
+    const modal = el("player-modal");
+    const title = el("player-title");
+    const toggleWeb = el("player-toggle-web");
+    const toggleLite = el("player-toggle-lite");
+    const bufferState = el("player-buffer-state");
+    if (!modal) return;
+    if (title) title.textContent = slot.name || slot.original?.name || "Видео";
+    if (toggleWeb) toggleWeb.classList.toggle("hidden", !slot.web);
+    if (toggleLite) toggleLite.classList.toggle("hidden", !slot.lite);
+    if (bufferState) bufferState.textContent = "готов";
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+    applySource(_activeSource);
+  }
+
+  function close() {
+    const modal = el("player-modal");
+    const video = el("player-video");
+    if (video) {
+      try {
+        video.pause();
+      } catch {
+        /* noop */
+      }
+      // Empty src so we stop pulling bytes from Drive once the modal is
+      // closed. Just `pause()` does NOT stop the network requests.
+      video.removeAttribute("src");
+      video.load();
+    }
+    if (modal) {
+      modal.classList.add("hidden");
+      modal.classList.remove("flex");
+    }
+    _activeSlot = null;
+  }
+
+  // ---- public API ----
+
+  async function refresh() {
+    setStatus("Запрашиваю список…");
+    const btn = el("player-refresh");
+    if (btn) btn.disabled = true;
+    try {
+      const files = await listVideos();
+      _grouped = groupSidecars(files);
+      renderList();
+      const hint = el("player-setup-hint");
+      if (hint && _grouped.length) hint.classList.add("hidden");
+      if (_grouped.length) {
+        setStatus(`Найдено видео: ${_grouped.length}.`, "success");
+      } else {
+        setStatus("Видео в папке не найдено.", "warn");
+      }
+    } catch (err) {
+      console.error(err);
+      setStatus(err.message || String(err), "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function connect() {
+    setStatus("Авторизуюсь в Drive…");
+    try {
+      if (!cfg.driveSaJson) {
+        setStatus(
+          "Нужен service-account JSON в разделе «Загрузить ключ Google Drive». " +
+            "Без него браузер не сможет читать файлы Drive.",
+          "warn"
+        );
+        // Surface settings panel so the user can paste it now.
+        try {
+          openSettings();
+        } catch {
+          /* noop */
+        }
+        return;
+      }
+      await ensureToken({ force: true });
+      setStatus("Готово. Грузим список…", "success");
+      await refresh();
+    } catch (err) {
+      console.error(err);
+      setStatus(err.message || String(err), "error");
+    }
+  }
+
+  function bind() {
+    if (_bound) return;
+    _bound = true;
+    el("player-auth")?.addEventListener("click", connect);
+    el("player-refresh")?.addEventListener("click", refresh);
+    el("player-close")?.addEventListener("click", close);
+    el("player-toggle-web")?.addEventListener("click", () => applySource("web"));
+    el("player-toggle-lite")?.addEventListener("click", () =>
+      applySource("lite")
+    );
+    el("player-modal")?.addEventListener("click", (e) => {
+      if (e.target === e.currentTarget) close();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (
+        e.key === "Escape" &&
+        !el("player-modal")?.classList.contains("hidden")
+      ) {
+        close();
+      }
+    });
+
+    // Buffer state line — lets the user see whether the choke point is the
+    // network or the decoder.
+    const video = el("player-video");
+    const bufferState = el("player-buffer-state");
+    if (video && bufferState) {
+      const updateBuffer = (label) => {
+        let buffered = "";
+        try {
+          const b = video.buffered;
+          if (b && b.length) {
+            const end = b.end(b.length - 1);
+            const now = video.currentTime || 0;
+            const ahead = Math.max(0, end - now);
+            buffered = ` · буфер ${ahead.toFixed(1)}s`;
+          }
+        } catch {
+          /* noop */
+        }
+        bufferState.textContent = `${label}${buffered}`;
+      };
+      video.addEventListener("waiting", () => updateBuffer("буферизуется…"));
+      video.addEventListener("playing", () => updateBuffer("играет"));
+      video.addEventListener("pause", () => updateBuffer("на паузе"));
+      video.addEventListener("loadedmetadata", () => updateBuffer("готов"));
+      video.addEventListener("progress", () => updateBuffer("грузим"));
+      video.addEventListener("stalled", () => updateBuffer("сеть упала"));
+      video.addEventListener("error", () => {
+        const err = video.error;
+        const code = err ? `code=${err.code}` : "unknown";
+        bufferState.textContent = `ошибка плеера (${code})`;
+        // Auto-fallback: if the original failed (likely codec/container
+        // mismatch in <video>) and we have a .web.mp4 sidecar, switch.
+        if (_activeSlot && _activeSource === "original" && _activeSlot.web) {
+          setStatus(
+            "Оригинал не играется в браузере, переключаюсь на .web.mp4.",
+            "warn"
+          );
+          applySource("web");
+        }
+      });
+    }
+  }
+
+  // Quietly refresh the SW token when the page reloads with a controller
+  // already present — otherwise the first /_drive_proxy/* request after a
+  // reload would 401 until the user manually re-clicks "Включить просмотр".
+  async function rehydrate() {
+    if (!cfg.driveSaJson) return;
+    try {
+      await ensureToken();
+    } catch {
+      /* User probably needs to re-paste creds; ignore silently. */
+    }
+  }
+
+  return { bind, refresh, connect, rehydrate };
+})();
 
 // ---------- bootstrap ----------
 document.addEventListener("DOMContentLoaded", () => {
@@ -7666,6 +8225,11 @@ document.addEventListener("DOMContentLoaded", () => {
   HelpDialog.bind();
   SettingsBackup.bind();
   SecretsAudit.bind();
+  Player.bind();
+  // Keep the Drive bearer-token in the SW alive across reloads so the very
+  // first /_drive_proxy/ request doesn't 401 before the user clicks
+  // "Включить просмотр". Best-effort; silent on missing creds.
+  Player.rehydrate().catch(() => {});
   bindHeaderActionButtons();
   RecentURLs.render();
 

@@ -24,8 +24,24 @@
 //     diagnostics in the page can show which SW is running.
 // =============================================================================
 
-const CACHE_VERSION = "film-beamer-v30-drive-oauth-button";
+const CACHE_VERSION = "film-beamer-v31-drive-streamer";
 const CACHE_PREFIX = "film-beamer-";
+
+// Path prefix that the in-page player uses to fetch Drive video bytes via
+// us. Requests look like `/_drive_proxy/<fileId>` and we transparently
+// rewrite them into `drive/v3/files/<id>?alt=media` with the page-supplied
+// OAuth bearer token attached. This is the only way to make a regular
+// `<video src="...">` element play an authenticated Drive file — the
+// browser will not let us set an Authorization header on a media element
+// directly. By keeping it same-origin, the standard Range/seek/byte-range
+// logic the browser already implements just works.
+const DRIVE_PROXY_PREFIX = "/_drive_proxy/";
+
+// Stash of Drive bearer tokens keyed by `driveKey` (currently a single
+// `"current"` slot; mapped per-mode in case we later want SA + OAuth
+// side-by-side). Refreshed by the page on a timer; the SW does not refresh
+// tokens itself because the page already owns the OAuth/JWT machinery.
+const driveTokens = new Map();
 
 // Things that change every release — must come from network when possible.
 // We still keep them in cache as an offline fallback.
@@ -184,6 +200,69 @@ self.addEventListener("activate", (event) => {
 
 // ---------- fetch ----------
 
+// ---------- Drive proxy ----------
+
+// Pulls the Bearer token out of our stash. Returns null if the page hasn't
+// pushed one yet (in which case the player should show a "press play to
+// authenticate" hint rather than firing requests we'll just 401 on).
+function getDriveToken() {
+  return driveTokens.get("current") || null;
+}
+
+// Forwards a same-origin `/_drive_proxy/<fileId>` request to the real
+// Drive API. We deliberately preserve the `Range` header so the browser's
+// video element can seek freely without us having to implement byte-range
+// logic ourselves — Drive's `alt=media` honours Range for both binary
+// uploads and converted exports.
+async function proxyDriveRequest(request, fileId) {
+  const token = getDriveToken();
+  if (!token) {
+    return new Response(
+      "Drive token not set. Open the playback panel and grant access.",
+      {
+        status: 401,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      }
+    );
+  }
+  // `supportsAllDrives=true` so Shared Drive files work transparently.
+  // `acknowledgeAbuse=true` is required by Drive to download files it has
+  // flagged as "potentially abusive" (any large binary, basically).
+  const target =
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}` +
+    `?alt=media&supportsAllDrives=true&acknowledgeAbuse=true`;
+  const headers = new Headers();
+  headers.set("Authorization", `Bearer ${token}`);
+  const range = request.headers.get("Range");
+  if (range) headers.set("Range", range);
+  let res;
+  try {
+    res = await fetch(target, { method: "GET", headers, cache: "no-store" });
+  } catch (err) {
+    return new Response(
+      `Drive fetch failed: ${err && err.message ? err.message : err}`,
+      {
+        status: 502,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      }
+    );
+  }
+  // Strip Google-specific cookies / CORS headers that aren't useful here
+  // and add an explicit Accept-Ranges so HTMLMediaElement reliably enables
+  // its scrub-bar even when Drive sometimes omits it.
+  const outHeaders = new Headers();
+  for (const [k, v] of res.headers.entries()) {
+    if (/^set-cookie|^x-goog/i.test(k)) continue;
+    outHeaders.set(k, v);
+  }
+  if (!outHeaders.has("Accept-Ranges")) outHeaders.set("Accept-Ranges", "bytes");
+  return new Response(res.body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers: outHeaders,
+  });
+}
+
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   // Service workers only intercept GETs by default, but let's be explicit so
@@ -191,6 +270,20 @@ self.addEventListener("fetch", (event) => {
   if (req.method !== "GET") return;
 
   const url = new URL(req.url);
+
+  // Same-origin Drive proxy — turn /_drive_proxy/<id> into an authenticated
+  // Drive download. Must be checked BEFORE the cross-origin pass-through.
+  if (isSameOrigin(url) && url.pathname.startsWith(DRIVE_PROXY_PREFIX)) {
+    const fileId = decodeURIComponent(
+      url.pathname.slice(DRIVE_PROXY_PREFIX.length)
+    );
+    if (!fileId) {
+      event.respondWith(new Response("Missing file id", { status: 400 }));
+      return;
+    }
+    event.respondWith(proxyDriveRequest(req, fileId));
+    return;
+  }
 
   // Cross-origin requests pass through untouched. This includes the GitHub
   // API, Google Drive API, OAuth, libsodium CDN fallback, jsdelivr.
@@ -252,6 +345,17 @@ self.addEventListener("message", (event) => {
         type: "SW_VERSION",
         version: CACHE_VERSION,
       });
+    }
+    return;
+  }
+  if (data.type === "DRIVE_TOKEN") {
+    // The page just refreshed the Drive bearer token. We store it for the
+    // /_drive_proxy/ fetch handler to use on subsequent requests. We do not
+    // attempt to refresh tokens ourselves — the page owns OAuth/JWT.
+    if (typeof data.token === "string" && data.token) {
+      driveTokens.set("current", data.token);
+    } else {
+      driveTokens.delete("current");
     }
     return;
   }
