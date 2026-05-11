@@ -24,18 +24,21 @@
 //     diagnostics in the page can show which SW is running.
 // =============================================================================
 
-const CACHE_VERSION = "film-beamer-v38-drive-file-player";
+const CACHE_VERSION = "film-beamer-v39-drive-player-fix";
 const CACHE_PREFIX = "film-beamer-";
 
 // Path prefix that the in-page player uses to fetch Drive video bytes via
-// us. Requests look like `/_drive_proxy/<fileId>` and we transparently
+// us. On GitHub Pages the app is scoped under `/film/`, so derive the
+// prefix from the SW scope instead of assuming site root. Requests look
+// like `<scope>_drive_proxy/<fileId>` and we transparently
 // rewrite them into `drive/v3/files/<id>?alt=media` with the page-supplied
 // OAuth bearer token attached. This is the only way to make a regular
 // `<video src="...">` element play an authenticated Drive file — the
 // browser will not let us set an Authorization header on a media element
 // directly. By keeping it same-origin, the standard Range/seek/byte-range
 // logic the browser already implements just works.
-const DRIVE_PROXY_PREFIX = "/_drive_proxy/";
+const DRIVE_PROXY_PREFIX = new URL("./_drive_proxy/", self.registration.scope)
+  .pathname;
 
 // Stash of Drive bearer tokens keyed by `driveKey` (currently a single
 // `"current"` slot; mapped per-mode in case we later want SA + OAuth

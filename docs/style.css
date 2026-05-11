@@ -56,6 +56,31 @@ textarea {
   background-clip: padding-box;
 }
 
+#player-modal {
+  padding: clamp(0.5rem, 2vw, 1rem);
+}
+
+#player-modal .player-modal-panel {
+  max-height: calc(100vh - 1rem);
+  max-width: min(96rem, calc(100vw - 1rem));
+}
+
+#player-video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: calc(100vh - 8rem);
+  object-fit: contain;
+  background: #000;
+}
+
+@media (max-width: 640px) {
+  #player-video {
+    max-height: calc(100vh - 7rem);
+    min-height: 12rem;
+  }
+}
+
 .toast {
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(16, 19, 28, 0.85);
