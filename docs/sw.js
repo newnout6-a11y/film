@@ -24,7 +24,7 @@
 //     diagnostics in the page can show which SW is running.
 // =============================================================================
 
-const CACHE_VERSION = "film-beamer-v36-drive-file-scope";
+const CACHE_VERSION = "film-beamer-v37-tracking-progress";
 const CACHE_PREFIX = "film-beamer-";
 
 // Path prefix that the in-page player uses to fetch Drive video bytes via

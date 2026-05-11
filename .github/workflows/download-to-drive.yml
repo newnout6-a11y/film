@@ -352,21 +352,30 @@ jobs:
           trackers="udp://tracker.opentrackr.org:1337/announce,udp://open.demonii.com:1337/announce,udp://open.stealth.si:80/announce,udp://exodus.desync.com:6969/announce,udp://tracker.torrent.eu.org:451/announce,udp://tracker.openbittorrent.com:6969/announce"
           aria2c \
             --console-log-level=warn \
-            --summary-interval=15 \
+            --summary-interval=5 \
+            --bt-metadata-only=false \
+            --bt-remove-unselected-file=true \
             --enable-dht=true \
             --enable-dht6=false \
             --enable-peer-exchange=true \
             --bt-enable-lpd=true \
             --bt-tracker="$trackers" \
             --bt-save-metadata=true \
-            --bt-stop-timeout=900 \
+            --bt-stop-timeout=600 \
+            --timeout=60 \
+            --connect-timeout=30 \
+            --lowest-speed-limit=1K \
             --seed-time=0 \
             --listen-port=6881-6891 \
             --dht-listen-port=6881-6891 \
             --max-connection-per-server=16 \
             --split=16 \
             --continue=true \
-            "$URL"
+            "$URL" || {
+              code=$?
+              echo "::error::BitTorrent did not download data. Usually this means the magnet has no active seeders or metadata never arrived; try another result with more 🌱 seeds or add Real-Debrid."
+              exit "$code"
+            }
           # Drop aria2 control files; we don't want them on Drive.
           find "$WORK" -name '*.aria2' -type f -delete || true
           # If the torrent was a single file, leave it; if it was a folder,

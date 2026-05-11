@@ -58,6 +58,7 @@ const defaultBranchCache = new Map();
 // short-lived feature branch — in priority order. The first one that actually
 // exists on the remote wins.
 const FALLBACK_BRANCHES = ["base", "main", "master"];
+const CANONICAL_REPO = "newnout6-a11y/film";
 
 // Pattern for "this looks like a feature branch, not a long-lived trunk".
 // We use this both for migrating saved overrides and for ignoring a stale
@@ -245,6 +246,14 @@ function inferRepoFromUrl() {
     /* noop */
   }
   return "";
+}
+
+function normalizeRepoName(repo) {
+  return String(repo || "").trim().toLowerCase();
+}
+
+function isCanonicalProjectRepo(repo) {
+  return normalizeRepoName(repo) === CANONICAL_REPO;
 }
 
 function toast(message, kind = "info", timeoutMs = 4000) {
@@ -940,7 +949,11 @@ function bindSettings() {
   $("#settings-save").addEventListener("click", () => {
     const repo = $("#cfg-repo").value.trim();
     const inferred = inferRepoFromUrl();
-    if (inferred && repo === inferred) {
+    if (
+      inferred &&
+      normalizeRepoName(repo) === normalizeRepoName(inferred) &&
+      !isCanonicalProjectRepo(repo)
+    ) {
       toast(
         "Это репозиторий сайта по URL. Укажи свой fork в формате owner/repo, иначе все аккаунты будут запускать один и тот же runner.",
         "error",
@@ -1103,10 +1116,12 @@ async function submitBeam({ qualityOverride = null, toastLabel = null } = {}) {
   const rawUrl = $("#url").value.trim();
   const quality = qualityOverride || $("#quality").value || "auto";
   const customFormat = $("#ytdlp_format").value.trim();
+  const filename = $("#filename").value.trim();
+  const subfolder = $("#subfolder").value.trim();
   const inputs = {
     url: rawUrl,
-    filename: $("#filename").value.trim(),
-    subfolder: $("#subfolder").value.trim(),
+    filename,
+    subfolder,
     quality,
     ytdlp_format: quality === "custom" ? customFormat || "bv*+ba/b" : "",
   };
@@ -1155,6 +1170,18 @@ async function submitBeam({ qualityOverride = null, toastLabel = null } = {}) {
     const knownRunIds = await snapshotRunIds(gh, cfg.workflow);
     const dispatchedAt = Date.now();
     await gh.dispatchWorkflow({ ref, inputs });
+    RecentURLs.add({ url: rawUrl, filename });
+    RunHistory.add({
+      id: `dispatch-${dispatchedAt}`,
+      dispatchedAt,
+      workflowFile: cfg.workflow,
+      url: rawUrl,
+      filename,
+      subfolder,
+      quality,
+      ytdlp_format: inputs.ytdlp_format,
+      status: "queued",
+    });
     toast(toastLabel || "Запущено — раннер качает…", "success");
     $("#url").value = "";
     setTimeout(() => refreshRuns(true), 1500);
@@ -2920,7 +2947,7 @@ function formatBytes(n) {
   return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${units[i]}`;
 }
 
-function renderSearchResults(items) {
+function renderSearchResults(items, opts = {}) {
   const wrap = $("#search-results");
   const list = $("#search-results-list");
   const count = $("#search-results-count");
@@ -2938,6 +2965,9 @@ function renderSearchResults(items) {
     return;
   }
   for (const item of items) {
+    if (opts.query && !item.searchQuery) {
+      item.searchQuery = opts.query;
+    }
     const li = document.createElement("li");
     li.className =
       "group flex items-start gap-3 rounded-xl border border-white/10 bg-ink-900/60 p-3 hover:border-accent-400/40";
@@ -3004,6 +3034,24 @@ async function beamMagnet(item, btn) {
         quality: "auto",
         ytdlp_format: "",
       },
+    });
+    RecentURLs.add({
+      url: item.magnet,
+      filename: item.title || item.searchQuery || "",
+    });
+    RunHistory.add({
+      id: `dispatch-${dispatchedAt}`,
+      dispatchedAt,
+      workflowFile: cfg.workflow,
+      url: item.magnet,
+      filename: item.title || "",
+      subfolder: "",
+      quality: "auto",
+      ytdlp_format: "",
+      searchQuery: item.searchQuery || "",
+      tracker: item.tracker || "",
+      seeders: typeof item.seeders === "number" ? item.seeders : null,
+      status: "queued",
     });
     toast("Запущено — раннер качает торрент…", "success");
     setTimeout(() => refreshRuns(true), 1500);
@@ -3151,7 +3199,7 @@ function bindSearch() {
       // Re-render the stage list with the per-tracker truth (`stages`)
       // instead of leaving the workflow's "all green" status visible.
       renderSearchStages(job ? job.steps || [] : [], { stages });
-      renderSearchResults(items);
+      renderSearchResults(items, { query });
       if (!items.length) {
         toast("Ничего не нашлось.", "info");
       } else {
@@ -3371,6 +3419,16 @@ function indexStepsByStage(steps) {
 function summariseRun(run, job) {
   if (!run) return { kind: "queued", text: "Ждём GitHub…" };
   if (run.status === "queued") return { kind: "queued", text: "В очереди" };
+  if (
+    job &&
+    job.status === "in_progress" &&
+    (job.steps || []).some((s) => /download with aria2 \(bittorrent\)/i.test(s.name || "") && s.status === "in_progress")
+  ) {
+    return {
+      kind: "running",
+      text: "Идёт BitTorrent: ищем сидов/метаданные. Если скорость 0 долго держится, у раздачи мало сидов.",
+    };
+  }
   if (run.status === "completed") {
     if (run.conclusion === "success" || run.conclusion === "neutral") {
       return { kind: "success", text: "Готово" };
@@ -3564,6 +3622,9 @@ function reopenProgressDialog() {
 function closeProgressDialog() {
   const dlg = $("#progress-dialog");
   if (!dlg) return;
+  if (_progressActive && !confirm("Скрыть отслеживание? Его можно снова открыть из истории запусков.")) {
+    return;
+  }
   dlg.classList.add("hidden");
   hideRestorePill();
   _progressActive = false;
@@ -3634,6 +3695,15 @@ function setProgressCurrentStep(name) {
   } else {
     cur.textContent = _progressLastCurrentStep || "—";
   }
+  const hintRow = $("#progress-hint-row");
+  const hint = $("#progress-hint");
+  if (!hintRow || !hint) return;
+  const isTorrent = /bittorrent/i.test(name || "");
+  hintRow.classList.toggle("hidden", !isTorrent);
+  if (isTorrent) {
+    hint.textContent =
+      "0 Б/с на metadata значит раннер ждёт сидов. Это не загрузка в Drive; если 10–15 минут нет скорости, раздача почти мёртвая.";
+  }
 }
 
 function setProgressSubtitle(text) {
@@ -3687,11 +3757,20 @@ async function trackDispatchedRun(workflowFile, dispatchedAt, baseTitle, knownRu
       setProgressSubtitle(
         "Запуск не появился в API за полторы минуты. Открой Actions в GitHub и проверь вручную."
       );
-      ActiveRunStore.clear();
       return;
     }
     _trackedRun = run;
     ActiveRunStore.attachRun(run);
+    const pendingHistory = RunHistory.findByDispatchedAt(dispatchedAt);
+    if (pendingHistory) {
+      RunHistory.update(pendingHistory.id, {
+        runId: run.id,
+        runUrl: run.html_url,
+        runNumber: run.run_number,
+        runCreatedAt: run.created_at,
+        status: run.status || "queued",
+      });
+    }
 
     const titleEl = $("#progress-title");
     if (titleEl) {
@@ -3722,7 +3801,6 @@ async function trackDispatchedRun(workflowFile, dispatchedAt, baseTitle, knownRu
           setProgressSubtitle(
             "Токен GitHub отклонён — обнови PAT в Настройках."
           );
-          ActiveRunStore.clear();
           return;
         }
         // Exponential backoff for 5xx and network blips.
@@ -3738,6 +3816,15 @@ async function trackDispatchedRun(workflowFile, dispatchedAt, baseTitle, knownRu
       const jobs = data.jobs || [];
       const job = jobs[0];
       if (job) {
+        const pending = RunHistory.findByDispatchedAt(dispatchedAt);
+        if (pending) {
+          RunHistory.update(pending.id, {
+            status: job.status || run.status || "in_progress",
+            startedAt: job.started_at
+              ? new Date(job.started_at).getTime()
+              : pending.startedAt,
+          });
+        }
         const renderRes = renderProgressStages(job.steps || []);
         const summary = summariseRun(run, job);
         setProgressSubtitle(summary.text);
@@ -3767,6 +3854,19 @@ async function trackDispatchedRun(workflowFile, dispatchedAt, baseTitle, knownRu
           /* ignore — we already have a usable summary */
         }
         const final = summariseRun(run, job);
+        const pending = RunHistory.findByDispatchedAt(dispatchedAt);
+        if (pending) {
+          RunHistory.update(pending.id, {
+            status: "completed",
+            conclusion: run.conclusion || job.conclusion || "",
+            completedAt: job.completed_at
+              ? new Date(job.completed_at).getTime()
+              : Date.now(),
+            runId: run.id,
+            runUrl: run.html_url,
+            runNumber: run.run_number,
+          });
+        }
         setProgressSubtitle(final.text);
         // If the job failed, fetch the tail of the failing step's log so the
         // user has actionable context without leaving the page.
@@ -4254,7 +4354,7 @@ const SwUpdater = (() => {
 // check is best-effort and updates a row asynchronously — opening the
 // dialog never blocks on slow checks.
 const Diagnostics = (() => {
-  const PAGE_VERSION = "v22-secrets-audit";
+  const PAGE_VERSION = "v37-tracking-progress";
   let opened = false;
 
   function setRow(id, text, status) {
@@ -5520,39 +5620,8 @@ function applyDeepLinkPrefill() {
   }
 }
 
-// Wrap the original beam-form submit to record the URL into RecentURLs after
-// a successful dispatch. We do this via a post-bind hook rather than editing
-// bindForm directly so the existing flow is untouched.
 function bindRecentUrlCapture() {
-  const form = $("#beam-form");
-  if (!form) return;
-  // We capture the inputs *at submit time* (not at dispatch time) so we
-  // catch even runs that fail validation after submit started, but we
-  // only push to RecentURLs once the form's "Отправляем…" button label has
-  // returned to its original state without an error appearing in #form-error.
-  const urlInput = $("#url");
-  const filenameInput = $("#filename");
-  let pending = null;
-  form.addEventListener(
-    "submit",
-    () => {
-      pending = {
-        url: urlInput ? urlInput.value.trim() : "",
-        filename: filenameInput ? filenameInput.value.trim() : "",
-      };
-      // After ~6s, if no error appeared we treat the dispatch as successful
-      // and store the URL.
-      setTimeout(() => {
-        if (!pending) return;
-        const errEl = $("#form-error");
-        if (!errEl || !errEl.textContent.trim()) {
-          if (pending.url) RecentURLs.add(pending);
-        }
-        pending = null;
-      }, 6000);
-    },
-    { capture: true }
-  );
+  RecentURLs.render();
 }
 
 // Refresh button rotation on click — purely cosmetic but signals to the user
@@ -6162,6 +6231,8 @@ const RunHistory = (() => {
       const fields = [
         entry.url,
         entry.filename,
+        entry.searchQuery,
+        entry.tracker,
         entry.subfolder,
         entry.quality,
         entry.conclusion,
@@ -6278,6 +6349,11 @@ const RunHistory = (() => {
     const meta = document.createElement("div");
     meta.className = "history-meta";
     meta.appendChild(metaPair("URL", shortUrl(entry.url), entry.url));
+    if (entry.searchQuery) meta.appendChild(metaPair("Запрос", entry.searchQuery));
+    if (entry.tracker) meta.appendChild(metaPair("Трекер", entry.tracker));
+    if (typeof entry.seeders === "number") {
+      meta.appendChild(metaPair("Сиды", String(entry.seeders)));
+    }
     if (entry.subfolder) meta.appendChild(metaPair("Папка", entry.subfolder));
     if (entry.quality) meta.appendChild(metaPair("Качество", entry.quality));
     if (entry.startedAt && entry.completedAt) {
@@ -6301,6 +6377,15 @@ const RunHistory = (() => {
       open.className = "history-btn history-btn-link";
       open.textContent = "Открыть";
       actions.appendChild(open);
+    }
+
+    if (!entry.conclusion && (entry.runId || entry.dispatchedAt)) {
+      const track = document.createElement("button");
+      track.type = "button";
+      track.className = "history-btn history-btn-link";
+      track.textContent = "Следить";
+      track.addEventListener("click", () => reopenTrackedEntry(entry));
+      actions.appendChild(track);
     }
 
     const repeat = document.createElement("button");
@@ -6371,6 +6456,30 @@ const RunHistory = (() => {
     } catch {
       toast("Не удалось скопировать", "warn", 2400);
     }
+  }
+
+  function reopenTrackedEntry(entry) {
+    if (!entry) return;
+    const workflow = entry.workflowFile || cfg.workflow || "download-to-drive.yml";
+    const baseTitle = entry.filename || entry.searchQuery || "Закидывание";
+    const dispatchedAt = entry.dispatchedAt || entry.addedAt || Date.now();
+    openProgressDialog(
+      entry.runNumber ? `${baseTitle} · #${entry.runNumber}` : baseTitle
+    );
+    if (entry.runId) {
+      _trackedRun = {
+        id: entry.runId,
+        html_url: entry.runUrl || "",
+        run_number: entry.runNumber || "",
+        created_at: entry.runCreatedAt || new Date(dispatchedAt).toISOString(),
+      };
+      ActiveRunStore.markPending({ workflowFile: workflow, dispatchedAt, baseTitle });
+      ActiveRunStore.attachRun(_trackedRun);
+    }
+    trackDispatchedRun(workflow, dispatchedAt, baseTitle).catch((err) =>
+      ErrorLog.push(`Слежение из истории: ${err.message || err}`)
+    );
+    closeHistoryDialog();
   }
 
   function repeatEntry(entry) {
