@@ -75,6 +75,10 @@ textarea {
   background: #000;
 }
 
+#player-video.hidden {
+  display: none;
+}
+
 @media (max-width: 640px) {
   #player-video,
   #player-drive-preview {
