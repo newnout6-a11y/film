@@ -65,7 +65,8 @@ textarea {
   max-width: min(96rem, calc(100vw - 1rem));
 }
 
-#player-video {
+#player-video,
+#player-drive-preview {
   display: block;
   width: 100%;
   aspect-ratio: 16 / 9;
@@ -75,7 +76,8 @@ textarea {
 }
 
 @media (max-width: 640px) {
-  #player-video {
+  #player-video,
+  #player-drive-preview {
     max-height: calc(100vh - 7rem);
     min-height: 12rem;
   }

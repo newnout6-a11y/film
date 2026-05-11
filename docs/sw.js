@@ -24,7 +24,7 @@
 //     diagnostics in the page can show which SW is running.
 // =============================================================================
 
-const CACHE_VERSION = "film-beamer-v39-drive-player-fix";
+const CACHE_VERSION = "film-beamer-v40-drive-preview-fallback";
 const CACHE_PREFIX = "film-beamer-";
 
 // Path prefix that the in-page player uses to fetch Drive video bytes via
@@ -87,6 +87,16 @@ function isLiveAsset(pathname) {
 
 function isVendorAsset(pathname) {
   return /\/vendor\//.test(pathname) || /\.svg$/.test(pathname);
+}
+
+function contentTypeForName(name) {
+  const lower = (name || "").toLowerCase();
+  if (lower.endsWith(".mp4") || lower.endsWith(".m4v")) return "video/mp4";
+  if (lower.endsWith(".webm")) return "video/webm";
+  if (lower.endsWith(".mkv")) return "video/x-matroska";
+  if (lower.endsWith(".mov")) return "video/quicktime";
+  if (lower.endsWith(".ts") || lower.endsWith(".m2ts")) return "video/mp2t";
+  return "";
 }
 
 async function broadcastVersion() {
@@ -259,6 +269,14 @@ async function proxyDriveRequest(request, fileId) {
     outHeaders.set(k, v);
   }
   if (!outHeaders.has("Accept-Ranges")) outHeaders.set("Accept-Ranges", "bytes");
+  const currentType = outHeaders.get("Content-Type") || "";
+  const hintedType = contentTypeForName(
+    new URL(request.url).searchParams.get("name")
+  );
+  if (hintedType && (!currentType || currentType === "application/octet-stream")) {
+    outHeaders.set("Content-Type", hintedType);
+  }
+  outHeaders.set("Content-Disposition", "inline");
   return new Response(res.body, {
     status: res.status,
     statusText: res.statusText,

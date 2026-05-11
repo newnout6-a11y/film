@@ -8062,11 +8062,53 @@ const Player = (() => {
     return slot.original || slot.web || slot.lite;
   }
 
-  function driveProxyUrl(fileId) {
-    return new URL(
-      `./_drive_proxy/${encodeURIComponent(fileId)}`,
+  function driveProxyUrl(file) {
+    const url = new URL(
+      `./_drive_proxy/${encodeURIComponent(file.id)}`,
       document.baseURI
-    ).toString();
+    );
+    if (file.name) url.searchParams.set("name", file.name);
+    return url.toString();
+  }
+
+  function drivePreviewUrl(fileId) {
+    return `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/preview`;
+  }
+
+  function driveOpenUrl(fileId) {
+    return `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/view`;
+  }
+
+  function showHtmlPlayer() {
+    const video = el("player-video");
+    const previewWrap = el("player-drive-preview-wrap");
+    const preview = el("player-drive-preview");
+    if (preview) preview.removeAttribute("src");
+    if (previewWrap) previewWrap.classList.add("hidden");
+    if (video) video.classList.remove("hidden");
+  }
+
+  function showDrivePreview(file) {
+    const video = el("player-video");
+    const previewWrap = el("player-drive-preview-wrap");
+    const preview = el("player-drive-preview");
+    const open = el("player-drive-open");
+    if (!file || !preview || !previewWrap) return;
+    if (video) {
+      try {
+        video.pause();
+      } catch {
+        /* noop */
+      }
+      video.removeAttribute("src");
+      video.load();
+      video.classList.add("hidden");
+    }
+    preview.src = drivePreviewUrl(file.id);
+    if (open) open.href = driveOpenUrl(file.id);
+    previewWrap.classList.remove("hidden");
+    const lbl = el("player-source-label");
+    if (lbl) lbl.textContent = `Drive Preview (${humanSize(file.size)})`;
   }
 
   function applySource(source) {
@@ -8077,10 +8119,11 @@ const Player = (() => {
     const video = el("player-video");
     const lbl = el("player-source-label");
     if (video) {
+      showHtmlPlayer();
       // Use the SW proxy. The browser will issue Range requests against
       // this same-origin URL; the SW rewrites them into authenticated
       // calls to Drive's alt=media endpoint.
-      video.src = driveProxyUrl(file.id);
+      video.src = driveProxyUrl(file);
       video.load();
     }
     if (lbl) {
@@ -8116,6 +8159,7 @@ const Player = (() => {
   function close() {
     const modal = el("player-modal");
     const video = el("player-video");
+    const preview = el("player-drive-preview");
     if (video) {
       try {
         video.pause();
@@ -8127,6 +8171,7 @@ const Player = (() => {
       video.removeAttribute("src");
       video.load();
     }
+    if (preview) preview.removeAttribute("src");
     if (modal) {
       modal.classList.add("hidden");
       modal.classList.remove("flex");
@@ -8281,6 +8326,13 @@ const Player = (() => {
             "warn"
           );
           applySource("web");
+        } else if (_activeSlot && code === 4) {
+          const file = fileForSource(_activeSlot, _activeSource);
+          setStatus(
+            "HTML5 <video> не понял этот файл. Показываю Drive Preview.",
+            "warn"
+          );
+          showDrivePreview(file);
         }
       });
     }
