@@ -108,10 +108,120 @@ function saveCfg(cfg) {
   ) {
     SupabaseAuth.schedulePush();
   }
+  // The onboarding guide's step indicators (✓ / ·) live-update whenever
+  // a step's underlying cfg field changes. Guarded for the early-boot
+  // case where the module isn't loaded yet.
+  try {
+    if (typeof OnboardingGuide !== "undefined" && OnboardingGuide) {
+      OnboardingGuide.refresh();
+    }
+  } catch {
+    /* noop */
+  }
 }
 
 function clearCfg() {
   localStorage.removeItem(STORE_KEY);
+}
+
+// localStorage keys that hold per-account / per-user state. Cleared on
+// sign-out, sign-up and sign-in so a new identity at the same browser
+// never inherits the previous identity's data (the previous user's
+// GitHub PAT, Google OAuth refresh token, run history, presets, etc.).
+//
+// Per-device preferences (theme, sound, push-notification opt-in) are
+// deliberately NOT in this list — they describe the device, not the
+// user, so they survive an account switch.
+const ACCOUNT_SCOPED_LS_KEYS = [
+  STORE_KEY, // cfg blob: PAT, Drive creds, trackers, OAuth, ...
+  "film-beamer.recent-urls.v1", // URL recall list
+  "film-beamer.history.v1", // run history
+  "film-beamer.presets.v1", // saved workflow presets
+  "film-beamer.queue.v1", // bulk-beam queue
+];
+
+const ACCOUNT_SCOPED_SS_KEYS = [
+  "film-beamer.active-run.v1", // sessionStorage: active run pointer
+];
+
+// Wipe everything tied to the previous user identity. Called when the
+// auth boundary is crossed (sign-in / sign-up / sign-out). The page is
+// not reloaded — instead we reset every in-memory cache and let the UI
+// re-render from the now-default cfg so the user sees a brand-new app.
+function resetAccountLocalState() {
+  for (const k of ACCOUNT_SCOPED_LS_KEYS) {
+    try {
+      localStorage.removeItem(k);
+    } catch {
+      /* private mode / quota — non-fatal */
+    }
+  }
+  for (const k of ACCOUNT_SCOPED_SS_KEYS) {
+    try {
+      sessionStorage.removeItem(k);
+    } catch {
+      /* noop */
+    }
+  }
+  // Reset the in-memory cfg so saveCfg() can't echo the old values back
+  // and so any code reading `cfg.*` after this point sees defaults.
+  // Deep-clone the nested `trackers` map so subsequent edits to cfg
+  // don't mutate `defaultCfg.trackers.<id>.{user,pass}` by reference.
+  const freshTrackers = {};
+  for (const k of Object.keys(defaultCfg.trackers || {})) {
+    freshTrackers[k] = { ...defaultCfg.trackers[k] };
+  }
+  cfg = { ...defaultCfg, trackers: freshTrackers };
+  // Drop cached Drive access tokens & resolved-branch info so the next
+  // request goes through the auth path with the new (empty) cfg.
+  _driveAccessToken = null;
+  try {
+    defaultBranchCache.clear();
+  } catch {
+    /* defaultBranchCache not initialised yet — fine */
+  }
+  // Push an empty token to the Service Worker so any in-flight
+  // /_drive_proxy/* request can't reuse the previous user's bearer.
+  try {
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({
+        type: "DRIVE_TOKEN_CLEAR",
+      });
+    }
+  } catch {
+    /* SW not registered yet — fine */
+  }
+  // Hide the player's "we have a file list" state — those rows came
+  // from the previous user's Drive folder.
+  try {
+    if (typeof Player !== "undefined" && Player && Player.clear) {
+      Player.clear();
+    }
+  } catch {
+    /* Player not loaded yet — fine */
+  }
+  // Re-render any visible-on-page module surfaces that read from the
+  // now-cleared storage. Modal-only modules (RunHistory, BulkQueue,
+  // WorkflowPresets) will re-read on their next open() and so don't
+  // need a render call here.
+  try {
+    if (typeof RecentURLs !== "undefined" && RecentURLs && RecentURLs.render) {
+      RecentURLs.render();
+    }
+  } catch {
+    /* RecentURLs not loaded yet — fine */
+  }
+  try {
+    if (
+      typeof SecretsAudit !== "undefined" &&
+      SecretsAudit &&
+      SecretsAudit.reset
+    ) {
+      SecretsAudit.reset();
+    }
+  } catch {
+    /* SecretsAudit not loaded yet — fine */
+  }
 }
 
 function inferRepoFromUrl() {
@@ -5222,7 +5332,21 @@ const SecretsAudit = (() => {
     return _last;
   }
 
-  return { KNOWN, audit, render, refresh, bind, lastResult };
+  // Called from resetAccountLocalState() when the user signs out / in.
+  // Forgets any cached "GDRIVE_OAUTH_TOKEN was uploaded N hours ago"
+  // results so the panel doesn't surface state belonging to the prior
+  // identity until the next manual refresh.
+  function reset() {
+    _last = null;
+    try {
+      const panel = $("#secrets-audit");
+      if (panel) panel.innerHTML = "";
+    } catch {
+      /* DOM not ready — fine */
+    }
+  }
+
+  return { KNOWN, audit, render, refresh, bind, lastResult, reset };
 })();
 
 // ---------- Settings test buttons ----------
@@ -8338,7 +8462,28 @@ const Player = (() => {
     }
   }
 
-  return { bind, refresh, connect, rehydrate };
+  // Wipe the visible state of the player when the user changes account
+  // (sign-in / sign-up / sign-out). Without this the previous user's
+  // Drive folder rows would linger until the next manual refresh.
+  function clear() {
+    _grouped = [];
+    _activeSlot = null;
+    try {
+      close();
+    } catch {
+      /* modal not open — fine */
+    }
+    try {
+      renderList();
+    } catch {
+      /* DOM not ready — fine */
+    }
+    const hint = el("player-setup-hint");
+    if (hint) hint.classList.remove("hidden");
+    setStatus("", "info");
+  }
+
+  return { bind, refresh, connect, rehydrate, clear };
 })();
 
 // ---------- Supabase auth (cross-device login/password) ----------
@@ -8362,6 +8507,193 @@ const Player = (() => {
 // two devices between syncs) resolve by "server wins on next pull" — that
 // is, whoever pushed most recently. Good enough for a single-user PWA;
 // real CRDT/diff would be over-engineered here.
+
+// ---------- Onboarding guide ----------
+//
+// A first-run "Как начать с нуля" panel that sits at the top of the page
+// and walks the user through the four setup steps:
+//   1. account (Supabase login)
+//   2. github (repo + PAT in cfg)
+//   3. drive  (OAuth refresh token OR SA JSON in cfg)
+//   4. beam   (paste a URL — never marked done; just a hand-off step)
+//
+// Visibility rules:
+//   - Hidden when the user has explicitly dismissed it (dismiss flag in
+//     localStorage, intentionally NOT cleared by resetAccountLocalState
+//     because dismissal is a per-device preference).
+//   - Hidden when all three setup steps are done — the user knows the
+//     drill at that point.
+//   - Re-shown on sign-out (SupabaseAuth.signOut() explicitly calls
+//     OnboardingGuide.show()) so the next person at the browser sees it.
+const OnboardingGuide = (() => {
+  const DISMISS_KEY = "film-beamer.guide-dismissed.v1";
+
+  function _isDismissed() {
+    try {
+      return localStorage.getItem(DISMISS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+  function _setDismissed(on) {
+    try {
+      if (on) localStorage.setItem(DISMISS_KEY, "1");
+      else localStorage.removeItem(DISMISS_KEY);
+    } catch {
+      /* noop */
+    }
+  }
+
+  function _stepAccount() {
+    return (
+      typeof SupabaseAuth !== "undefined" &&
+      SupabaseAuth &&
+      SupabaseAuth.isLoggedIn &&
+      SupabaseAuth.isLoggedIn()
+    );
+  }
+  function _stepGithub() {
+    return Boolean(cfg.repo && cfg.token);
+  }
+  function _stepDrive() {
+    return (
+      (typeof hasOauthDriveCreds === "function" && hasOauthDriveCreds()) ||
+      Boolean(cfg.driveSaJson)
+    );
+  }
+
+  function _markStep(n, done) {
+    const li = document.getElementById(`guide-step-${n}`);
+    if (!li) return;
+    const status = li.querySelector(".guide-status");
+    if (done) {
+      li.classList.add("opacity-60");
+      if (status) {
+        status.textContent = "✓";
+        status.classList.add(
+          "bg-emerald-500",
+          "text-emerald-950",
+          "border-emerald-400"
+        );
+        status.classList.remove("bg-ink-950", "text-slate-300", "border-white/15");
+      }
+    } else {
+      li.classList.remove("opacity-60");
+      if (status) {
+        status.textContent = String(n);
+        status.classList.remove(
+          "bg-emerald-500",
+          "text-emerald-950",
+          "border-emerald-400"
+        );
+        status.classList.add("bg-ink-950", "text-slate-300", "border-white/15");
+      }
+    }
+  }
+
+  function refresh() {
+    const sec = document.getElementById("onboarding-guide");
+    if (!sec) return;
+    const acc = _stepAccount();
+    const gh = _stepGithub();
+    const dr = _stepDrive();
+    _markStep(1, acc);
+    _markStep(2, gh);
+    _markStep(3, dr);
+    // Step 4 never auto-completes — the page can't tell a successful
+    // beam apart from the user just clicking around. Stays "pending"
+    // until the user dismisses the whole guide.
+    const everythingDone = acc && gh && dr;
+    if (_isDismissed() || everythingDone) {
+      sec.classList.add("hidden");
+    } else {
+      sec.classList.remove("hidden");
+    }
+  }
+
+  function show() {
+    _setDismissed(false);
+    const sec = document.getElementById("onboarding-guide");
+    if (sec) sec.classList.remove("hidden");
+  }
+
+  function _handleAction(action) {
+    switch (action) {
+      case "open-login": {
+        const pill = document.getElementById("account-pill");
+        if (pill) pill.click();
+        break;
+      }
+      case "open-settings-github": {
+        try {
+          openSettings();
+        } catch {
+          /* noop */
+        }
+        const f = document.getElementById("cfg-repo");
+        if (f) {
+          try {
+            f.scrollIntoView({ behavior: "smooth", block: "center" });
+            f.focus();
+          } catch {
+            /* noop */
+          }
+        }
+        break;
+      }
+      case "open-settings-drive": {
+        try {
+          openSettings();
+        } catch {
+          /* noop */
+        }
+        const btn = document.getElementById("drive-connect-btn");
+        if (btn) {
+          try {
+            btn.scrollIntoView({ behavior: "smooth", block: "center" });
+          } catch {
+            /* noop */
+          }
+        }
+        break;
+      }
+      case "focus-url": {
+        const u = document.getElementById("url");
+        if (u) {
+          try {
+            u.scrollIntoView({ behavior: "smooth", block: "center" });
+            u.focus();
+          } catch {
+            /* noop */
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  function bind() {
+    const sec = document.getElementById("onboarding-guide");
+    if (!sec) return;
+    const dismiss = document.getElementById("guide-dismiss");
+    if (dismiss) {
+      dismiss.addEventListener("click", () => {
+        _setDismissed(true);
+        sec.classList.add("hidden");
+      });
+    }
+    sec.querySelectorAll("[data-guide-action]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const action = btn.getAttribute("data-guide-action");
+        if (action) _handleAction(action);
+      });
+    });
+    refresh();
+  }
+
+  return { bind, refresh, show };
+})();
+
 const SupabaseAuth = (() => {
   let _session = null;
   let _pushTimer = null;
@@ -8486,6 +8818,11 @@ const SupabaseAuth = (() => {
   }
 
   async function signUp(email, password) {
+    // Brand-new identity → brand-new local state. We do this BEFORE the
+    // network call so an aborted signup (network error, weak password)
+    // still doesn't leak data into a partially-created account.
+    resetAccountLocalState();
+    _rehydrateUIFromCfg();
     const data = await _request("/auth/v1/signup", {
       method: "POST",
       body: JSON.stringify({ email, password }),
@@ -8501,6 +8838,11 @@ const SupabaseAuth = (() => {
   }
 
   async function signIn(email, password) {
+    // Drop whatever the previous occupant of this browser left behind so
+    // the new identity's cfg comes entirely from the server (or, if the
+    // server has nothing yet, starts empty instead of inheriting).
+    resetAccountLocalState();
+    _rehydrateUIFromCfg();
     const data = await _request("/auth/v1/token?grant_type=password", {
       method: "POST",
       body: JSON.stringify({ email, password }),
@@ -8520,7 +8862,22 @@ const SupabaseAuth = (() => {
       console.warn("SupabaseAuth: server-side signOut failed", err);
     }
     _setSession(null);
+    // Account boundary: wipe local copies of the cfg, GitHub PAT, Drive
+    // OAuth refresh token, run history, presets, etc. The next person at
+    // this browser (or the same person signing up under a different
+    // address) MUST see a clean slate.
+    resetAccountLocalState();
+    _rehydrateUIFromCfg();
     _renderUI();
+    try {
+      // Surface the onboarding guide for whoever is at the browser next.
+      if (typeof OnboardingGuide !== "undefined" && OnboardingGuide) {
+        OnboardingGuide.show();
+        OnboardingGuide.refresh();
+      }
+    } catch {
+      /* guide not loaded yet — fine */
+    }
   }
 
   // Called after a successful sign-in / sign-up. Pulls the server config
@@ -8679,6 +9036,15 @@ const SupabaseAuth = (() => {
     if (isLoggedIn()) {
       if (signinForm) signinForm.classList.add("hidden");
       if (signupForm) signupForm.classList.add("hidden");
+    }
+    // Tick the "1. Войди в аккаунт" step on/off without waiting for the
+    // next saveCfg().
+    try {
+      if (typeof OnboardingGuide !== "undefined" && OnboardingGuide) {
+        OnboardingGuide.refresh();
+      }
+    } catch {
+      /* noop */
     }
   }
 
@@ -8912,6 +9278,7 @@ document.addEventListener("DOMContentLoaded", () => {
   SettingsBackup.bind();
   SecretsAudit.bind();
   Player.bind();
+  OnboardingGuide.bind();
   // Keep the Drive bearer-token in the SW alive across reloads so the very
   // first /_drive_proxy/ request doesn't 401 before the user clicks
   // "Включить просмотр". Best-effort; silent on missing creds.
