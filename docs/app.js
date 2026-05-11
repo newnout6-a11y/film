@@ -535,10 +535,6 @@ const SYNC_SCOPES =
   "https://www.googleapis.com/auth/drive.file " +
   "https://www.googleapis.com/auth/drive.readonly";
 
-function driveOauthScope() {
-  return cfg.driveOauthScope || DRIVE_FILE_SCOPE;
-}
-
 let _driveAccessToken = null; // { token, expiresAt }
 
 function pemToArrayBuffer(pem) {
@@ -578,10 +574,6 @@ function hasOauthDriveCreds() {
       cfg.driveOauthClientId &&
       cfg.driveOauthClientSecret
   );
-}
-
-function canListDriveRoot() {
-  return hasOauthDriveCreds() && driveOauthScope() !== DRIVE_FILE_SCOPE;
 }
 
 // Exchange the saved refresh_token for a fresh access_token. Google's
@@ -1710,9 +1702,9 @@ function bindDriveOAuthUpload() {
 // Personal @gmail.com accounts need OAuth so uploads count against the
 // user's own quota. Google's TV/device flow only allows a limited scope
 // set; the full `/auth/drive` scope is rejected with `invalid_scope`, so
-// the one-click browser path uses `/auth/drive.file`. That is enough for
-// the CI uploader to create files in the chosen folder. Full-folder
-// browsing still requires the rclone fallback (`/auth/drive`).
+// the one-click browser path uses `/auth/drive.file`. That still lets the
+// app list and stream files/folders it creates itself — exactly the
+// automation folder and uploads produced by this app.
 //
 // We ask for a user-owned TV OAuth client because the static GitHub Pages
 // app should not own central refresh tokens for everyone.
@@ -1795,6 +1787,60 @@ async function createDriveAutomationFolder(accessToken) {
     throw new Error(`Не удалось автоматически создать папку Drive: ${msg}`);
   }
   return data;
+}
+
+async function getDriveFolder(accessToken, folderId) {
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+      folderId
+    )}?fields=id,name,mimeType,trashed`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Drive folder ${res.status}: ${text}`);
+  }
+  return await res.json();
+}
+
+async function findDriveAutomationFolder(accessToken) {
+  const q =
+    "name='Film Beamer' and mimeType='application/vnd.google-apps.folder' and trashed=false";
+  const params = new URLSearchParams({
+    q,
+    fields: "files(id,name)",
+    pageSize: "1",
+  });
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files?${params.toString()}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Drive folder search ${res.status}: ${text}`);
+  }
+  const data = await res.json();
+  return Array.isArray(data.files) && data.files[0] ? data.files[0] : null;
+}
+
+async function ensureDriveAutomationFolder(accessToken, preferredFolderId) {
+  if (preferredFolderId) {
+    try {
+      const folder = await getDriveFolder(accessToken, preferredFolderId);
+      if (
+        folder &&
+        !folder.trashed &&
+        folder.mimeType === "application/vnd.google-apps.folder"
+      ) {
+        return folder;
+      }
+    } catch {
+      /* The manually provided folder is not visible to drive.file. */
+    }
+  }
+  const existing = await findDriveAutomationFolder(accessToken);
+  if (existing) return existing;
+  return await createDriveAutomationFolder(accessToken);
 }
 
 let _deviceCountdownTimer = null;
@@ -2043,17 +2089,18 @@ function bindDriveOAuthConnect() {
     }
 
     _closeDeviceModal();
-    if (!folderId) {
-      setDriveConnectStatus("Готово! Создаю папку Film Beamer в Drive…");
-      try {
-        const folder = await createDriveAutomationFolder(tokenData.access_token);
-        folderId = folder.id;
-        folderField.value = folderId;
-      } catch (err) {
-        btn.disabled = false;
-        setDriveConnectStatus(err.message || String(err), "error");
-        return;
-      }
+    setDriveConnectStatus("Готово! Готовлю папку Film Beamer для загрузок и плеера…");
+    try {
+      const folder = await ensureDriveAutomationFolder(
+        tokenData.access_token,
+        folderId
+      );
+      folderId = folder.id;
+      folderField.value = folderId;
+    } catch (err) {
+      btn.disabled = false;
+      setDriveConnectStatus(err.message || String(err), "error");
+      return;
     }
     setDriveConnectStatus("Шифрую и сохраняю секреты в GitHub…");
 
@@ -2102,7 +2149,7 @@ function bindDriveOAuthConnect() {
       setDriveConnectStatus(
         `Подключено. В GitHub Secrets записано: ${uploaded.join(
           "; "
-        )}. Загрузки будут работать через безопасный scope drive.file.`,
+        )}. Загрузка и плеер работают через безопасный scope drive.file.`,
         "success"
       );
       toast("Google Drive подключён.", "success");
@@ -4354,7 +4401,7 @@ const SwUpdater = (() => {
 // check is best-effort and updates a row asynchronously — opening the
 // dialog never blocks on slow checks.
 const Diagnostics = (() => {
-  const PAGE_VERSION = "v37-tracking-progress";
+  const PAGE_VERSION = "v38-drive-file-player";
   let opened = false;
 
   function setRow(id, text, status) {
@@ -7824,16 +7871,12 @@ const Player = (() => {
     }
   }
 
-  // List all video-ish files inside cfg.driveFolderId. Pages until exhausted.
+  // List all video-ish files inside cfg.driveFolderId. With drive.file this
+  // works for the app-created Film Beamer folder and app-created uploads.
   async function listVideos() {
     if (!cfg.driveFolderId) {
       throw new Error(
         "Сначала укажи Drive-папку в настройках («Папка Google Drive»)."
-      );
-    }
-    if (!canListDriveRoot()) {
-      throw new Error(
-        "Плеер не может перечислить папку при безопасном scope drive.file. Открой загруженный файл из ссылки в истории GitHub Actions или подключи Drive через rclone authorize \"drive\" для полного просмотра."
       );
     }
     const token = await ensureToken();
@@ -7865,9 +7908,10 @@ const Player = (() => {
         const text = await res.text();
         let hint = "";
         if (res.status === 403) {
-          hint =
-            " — у сервис-аккаунта нет доступа к папке. Расшарь папку на " +
-            "email сервис-аккаунта (раздел «Загрузить ключ Google Drive»).";
+          hint = hasOauthDriveCreds()
+            ? " — безопасный scope drive.file видит только папку/файлы, созданные этим приложением. Нажми «Подключить Google Drive» без ручной папки, чтобы приложение само создало папку Film Beamer."
+            : " — у сервис-аккаунта нет доступа к папке. Расшарь папку на " +
+              "email сервис-аккаунта (раздел «Загрузить ключ Google Drive»).";
         } else if (res.status === 401) {
           hint = " — токен Drive протух, попробуй кнопку «Включить просмотр» ещё раз.";
         }
@@ -8130,13 +8174,6 @@ const Player = (() => {
         }
         return;
       }
-      if (!canListDriveRoot()) {
-        setStatus(
-          "Безопасное подключение drive.file загрузку чинит, но плеер не может сканировать папку. Для плеера нужен JSON от rclone authorize \"drive\".",
-          "warn"
-        );
-        return;
-      }
       await ensureToken({ force: true });
       setStatus("Готово. Грузим список…", "success");
       await refresh();
@@ -8220,7 +8257,6 @@ const Player = (() => {
   // just works on every subsequent visit.
   async function rehydrate() {
     if (!hasOauthDriveCreds() && !cfg.driveSaJson) return;
-    if (hasOauthDriveCreds() && !canListDriveRoot()) return;
     try {
       await ensureToken();
     } catch {
