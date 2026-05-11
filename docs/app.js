@@ -27,6 +27,15 @@ const defaultCfg = {
   // on Drive. Per-device, never synced — paste once on each new device.
   driveSaJson: "",
   driveFolderId: "",
+  // ---- OAuth credentials saved after the in-app device-authorization
+  // flow (bindDriveOAuthConnect). The same refresh_token is also pushed
+  // to GitHub Secrets so the CI workflow can refresh access tokens on
+  // its own, but we keep a local copy so the in-page player can read
+  // Drive without a separate service-account JSON. One device-auth
+  // covers both upload and playback.
+  driveOauthClientId: "",
+  driveOauthClientSecret: "",
+  driveOauthRefreshToken: "",
   // Whether to auto-push the cfg blob to Drive on every "Сохранить" click.
   accountAutoPush: false,
   // Tracker creds. Mirror what gets uploaded to GitHub Secrets so we can sync
@@ -440,6 +449,54 @@ function utf8ToBase64Url(str) {
     .replace(/\//g, "_");
 }
 
+// True when the user has run the in-app device-authorization flow and
+// we have a refresh token + client_id/secret stashed locally. This
+// covers both upload (the workflow uses the same creds) and browser
+// playback, so we prefer it over the legacy SA-JSON path.
+function hasOauthDriveCreds() {
+  return Boolean(
+    cfg.driveOauthRefreshToken &&
+      cfg.driveOauthClientId &&
+      cfg.driveOauthClientSecret
+  );
+}
+
+// Exchange the saved refresh_token for a fresh access_token. Google's
+// device-flow refresh tokens are long-lived; this call is the only thing
+// we run on every player refresh. Returns the bare access_token string
+// and caches `_driveAccessToken` for subsequent calls within ~1h.
+async function refreshDriveOauthAccessToken() {
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: cfg.driveOauthClientId,
+      client_secret: cfg.driveOauthClientSecret,
+      refresh_token: cfg.driveOauthRefreshToken,
+      grant_type: "refresh_token",
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    // 400 invalid_grant means the refresh token was revoked (user
+    // disconnected the app from Google, or Google rotated it after a
+    // long idle period). Surface a clear next step so the player UI
+    // can prompt for re-auth instead of looping.
+    if (res.status === 400 && /invalid_grant/i.test(text)) {
+      throw new Error(
+        "Google отозвал доступ — нажми «Подключить Google Drive» в Настройках ещё раз."
+      );
+    }
+    throw new Error(`Google OAuth ${res.status}: ${text}`);
+  }
+  const data = await res.json();
+  _driveAccessToken = {
+    token: data.access_token,
+    expiresAt: Date.now() + (data.expires_in || 3600) * 1000,
+  };
+  return data.access_token;
+}
+
 // In-flight de-duplication: while a JWT exchange is running, parallel
 // callers (validateDriveAccess, backupCfgToDrive, checkDrive,
 // findDriveCfgFile) get the same Promise. Otherwise three buttons clicked
@@ -455,9 +512,16 @@ async function getDriveAccessToken() {
   }
   if (_driveAccessTokenInflight) return _driveAccessTokenInflight;
   _driveAccessTokenInflight = (async () => {
+    // Prefer the OAuth refresh-token path when the user ran the
+    // in-app device-auth flow. It uses their personal Google account,
+    // covers both reading and writing Drive, and avoids the separate
+    // service-account JSON step.
+    if (hasOauthDriveCreds()) {
+      return await refreshDriveOauthAccessToken();
+    }
     if (!cfg.driveSaJson) {
       throw new Error(
-        "Сначала вставь Google service-account JSON в раздел «Загрузить ключ Google Drive»."
+        "Сначала нажми «Подключить Google Drive» в Настройках — это даст доступ и для заброса, и для просмотра."
       );
     }
     let sa;
@@ -932,7 +996,11 @@ function bindSettings() {
     closeSettings();
     refreshRuns(true);
     // If the user opted in, push the cfg blob up to Drive in the background.
-    if (cfg.accountAutoPush && cfg.driveSaJson && cfg.driveFolderId) {
+    if (
+      cfg.accountAutoPush &&
+      (hasOauthDriveCreds() || cfg.driveSaJson) &&
+      cfg.driveFolderId
+    ) {
       backupCfgToDrive()
         .then(() => toast("Синхронизировано с Drive.", "success", 2000))
         .catch((err) =>
@@ -1997,10 +2065,22 @@ function bindDriveOAuthConnect() {
         const v4 = await uploadGitHubSecret("GDRIVE_FOLDER_ID", folderId);
         uploaded.push(`GDRIVE_FOLDER_ID (${formatSecretTs(v4)})`);
       }
+      // Persist the same creds locally so the in-page player can read
+      // Drive without a separate service-account JSON. The OAuth scope
+      // we requested (drive) covers both read and write, so one
+      // device-auth grants everything the UI needs from this point on.
+      cfg.driveOauthClientId = clientId;
+      cfg.driveOauthClientSecret = clientSecret;
+      cfg.driveOauthRefreshToken = tokenData.refresh_token;
+      if (folderId) cfg.driveFolderId = folderId;
+      saveCfg(cfg);
+      // Invalidate any cached SA-based access_token so the next request
+      // picks up the OAuth path on the very first try.
+      _driveAccessToken = null;
       setDriveConnectStatus(
         `Подключено. В GitHub Secrets записано: ${uploaded.join(
           "; "
-        )}. Воркфлоу теперь будет писать в твой Google Drive.`,
+        )}. Плеер теперь читает Drive сам, без сервис-аккаунта.`,
         "success"
       );
       toast("Google Drive подключён.", "success");
@@ -2014,6 +2094,17 @@ function bindDriveOAuthConnect() {
         }
       } catch {
         /* SecretsAudit not loaded yet — fine */
+      }
+      // Kick the player so the user sees their file list immediately,
+      // not after another manual click. Silent on failure (e.g. empty
+      // folder, transient network) — the regular status line in the
+      // player section will surface any real issue.
+      try {
+        if (typeof Player !== "undefined" && Player) {
+          await Player.refresh();
+        }
+      } catch (err) {
+        console.warn("Auto-refresh after Drive connect failed:", err);
       }
     } catch (err) {
       const msg = err.message || String(err);
@@ -2780,7 +2871,11 @@ function bindTrackersUpload() {
       }
       cfg = { ...cfg, trackers };
       saveCfg(cfg);
-      if (cfg.accountAutoPush && cfg.driveSaJson && cfg.driveFolderId) {
+      if (
+        cfg.accountAutoPush &&
+        (hasOauthDriveCreds() || cfg.driveSaJson) &&
+        cfg.driveFolderId
+      ) {
         backupCfgToDrive().catch(() => {});
       }
       for (const t of TRACKER_FIELDS) {
@@ -3352,9 +3447,9 @@ function sleep(ms) {
 function updateAccountStatus() {
   const el = $("#account-status");
   if (!el) return;
-  if (!cfg.driveSaJson || !cfg.driveFolderId) {
+  if ((!hasOauthDriveCreds() && !cfg.driveSaJson) || !cfg.driveFolderId) {
     el.textContent =
-      "Заполни service-account JSON и Folder ID ниже — это и есть «логин» аккаунта.";
+      "Нажми «Подключить Google Drive» ниже и выдай доступ — это и есть «логин» аккаунта.";
     el.className = "mt-3 text-xs text-amber-300";
     return;
   }
@@ -3368,9 +3463,9 @@ function bindAccountSync() {
   if (!pull || !push) return;
 
   pull.addEventListener("click", async () => {
-    if (!cfg.driveSaJson || !cfg.driveFolderId) {
+    if ((!hasOauthDriveCreds() && !cfg.driveSaJson) || !cfg.driveFolderId) {
       toast(
-        "Сначала заполни service-account JSON и Folder ID ниже.",
+        "Сначала нажми «Подключить Google Drive» ниже и укажи папку.",
         "error"
       );
       return;
@@ -3403,9 +3498,9 @@ function bindAccountSync() {
   });
 
   push.addEventListener("click", async () => {
-    if (!cfg.driveSaJson || !cfg.driveFolderId) {
+    if ((!hasOauthDriveCreds() && !cfg.driveSaJson) || !cfg.driveFolderId) {
       toast(
-        "Сначала заполни service-account JSON и Folder ID ниже.",
+        "Сначала нажми «Подключить Google Drive» ниже и укажи папку.",
         "error"
       );
       return;
@@ -3425,12 +3520,15 @@ function bindAccountSync() {
   });
 }
 
-// On startup, if we already have SA + folder configured, transparently pull
-// the latest cfg from Drive and apply it. This is what makes the "log in
-// from another device" flow seamless: paste the same SA + folder once and
-// everything else materialises.
+// On startup, if we already have Drive auth (OAuth or SA) + folder
+// configured, transparently pull the latest cfg from Drive and apply
+// it. This is what makes the "log in from another device" flow
+// seamless: run the device-auth once (or paste SA JSON) and everything
+// else materialises.
 async function bootstrapAccountSync() {
-  if (!cfg.driveSaJson || !cfg.driveFolderId) return;
+  if ((!hasOauthDriveCreds() && !cfg.driveSaJson) || !cfg.driveFolderId) {
+    return;
+  }
   try {
     const token = await getDriveAccessToken();
     const existing = await findDriveCfgFile(token, cfg.driveFolderId);
@@ -4511,7 +4609,7 @@ const Diagnostics = (() => {
 
   async function checkDrive() {
     setRow("#diag-drive", "пробую…", "pending");
-    if (!cfg.driveSaJson || !cfg.driveFolderId) {
+    if ((!hasOauthDriveCreds() && !cfg.driveSaJson) || !cfg.driveFolderId) {
       // Local form is empty — but the user may have already uploaded the
       // secret to GitHub on a previous session, then cleared localStorage
       // (or hard-reloaded). Consult SecretsAudit so this row reads
@@ -4527,9 +4625,14 @@ const Diagnostics = (() => {
       }
       if (audit && audit.ready && Array.isArray(audit.rows)) {
         const sa = audit.rows.find((r) => r.name === "GDRIVE_SERVICE_ACCOUNT");
+        const oauth = audit.rows.find((r) => r.name === "GDRIVE_OAUTH_TOKEN");
         const folder = audit.rows.find((r) => r.name === "GDRIVE_FOLDER_ID");
-        if (sa && sa.exists && folder && folder.exists) {
-          const ago = sa.updatedAt ? timeAgo(sa.updatedAt) : "";
+        // Either auth path on GitHub side counts as "Drive credentials
+        // are wired" — the workflow prefers OAuth and falls back to SA,
+        // so we don't insist on both.
+        const authRow = oauth && oauth.exists ? oauth : sa && sa.exists ? sa : null;
+        if (authRow && folder && folder.exists) {
+          const ago = authRow.updatedAt ? timeAgo(authRow.updatedAt) : "";
           setRow(
             "#diag-drive",
             ago
@@ -4540,7 +4643,7 @@ const Diagnostics = (() => {
           return;
         }
       }
-      setRow("#diag-drive", "SA + Folder не задан", "warn");
+      setRow("#diag-drive", "Drive не подключён", "warn");
       return;
     }
     try {
@@ -7731,10 +7834,11 @@ function bindAutoFillSuggestions() {
 // supports h264/aac mp4, has its own transcode queue, and stalls on
 // flaky connections). It works by:
 //
-//   1. Asking the Service Account JWT machinery for an access_token that
-//      covers `drive.readonly`. The same SA token bundled `drive.file`
-//      already, so we expanded SYNC_SCOPES rather than spinning up a
-//      second JWT round-trip.
+//   1. Asking `getDriveAccessToken()` for a Bearer that can read the
+//      configured Drive folder. The same call powers cfg sync, so we
+//      get OAuth refresh (preferred, set up by the "Подключить Google
+//      Drive" button) or the legacy Service Account JWT path
+//      transparently — the player doesn't need to know which one.
 //   2. Pushing that token into the Service Worker via postMessage so
 //      `/_drive_proxy/<id>` requests get an Authorization header attached
 //      transparently. The token is renewed every 30 minutes.
@@ -8096,15 +8200,41 @@ const Player = (() => {
   async function connect() {
     setStatus("Авторизуюсь в Drive…");
     try {
-      if (!cfg.driveSaJson) {
+      // Either of the two auth paths is enough: the in-app device-auth
+      // flow (preferred — user clicks "Подключить Google Drive"
+      // once and we save the refresh token locally) or the legacy
+      // service-account JSON pasted in Settings.
+      const haveAuth = hasOauthDriveCreds() || cfg.driveSaJson;
+      if (!haveAuth) {
         setStatus(
-          "Нужен service-account JSON в разделе «Загрузить ключ Google Drive». " +
-            "Без него браузер не сможет читать файлы Drive.",
+          "Одно действие осталось: открой Настройки и нажми «Подключить Google Drive» — " +
+            "Google спросит права, дальше всё само.",
           "warn"
         );
-        // Surface settings panel so the user can paste it now.
+        // Surface settings panel so the user lands directly on the
+        // device-auth button without hunting for it.
         try {
           openSettings();
+          $("#drive-connect-btn")?.scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+          });
+        } catch {
+          /* noop */
+        }
+        return;
+      }
+      if (!cfg.driveFolderId) {
+        setStatus(
+          "Не указана папка Drive. Открой Настройки и вставь URL папки (Подключить Google Drive).",
+          "warn"
+        );
+        try {
+          openSettings();
+          $("#drive-folder")?.scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+          });
         } catch {
           /* noop */
         }
@@ -8187,12 +8317,24 @@ const Player = (() => {
   // Quietly refresh the SW token when the page reloads with a controller
   // already present — otherwise the first /_drive_proxy/* request after a
   // reload would 401 until the user manually re-clicks "Включить просмотр".
+  // Also auto-list videos when auth is wired so the user lands on a
+  // ready-to-watch file list instead of a placeholder — this is the
+  // "full automation" we promised: one device-auth, then the player
+  // just works on every subsequent visit.
   async function rehydrate() {
-    if (!cfg.driveSaJson) return;
+    if (!hasOauthDriveCreds() && !cfg.driveSaJson) return;
     try {
       await ensureToken();
     } catch {
-      /* User probably needs to re-paste creds; ignore silently. */
+      /* User probably needs to re-grant access; ignore silently. */
+      return;
+    }
+    if (cfg.driveFolderId) {
+      try {
+        await refresh();
+      } catch {
+        /* Folder missing / offline — surface only on explicit click. */
+      }
     }
   }
 

@@ -24,7 +24,7 @@
 //     diagnostics in the page can show which SW is running.
 // =============================================================================
 
-const CACHE_VERSION = "film-beamer-v32-supabase-accounts";
+const CACHE_VERSION = "film-beamer-v33-auto-stream";
 const CACHE_PREFIX = "film-beamer-";
 
 // Path prefix that the in-page player uses to fetch Drive video bytes via
