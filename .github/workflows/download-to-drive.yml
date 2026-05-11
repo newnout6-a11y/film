@@ -34,6 +34,16 @@ on:
         required: false
         type: string
         default: ""
+      web_ready:
+        description: "Make video PWA-streamable: none | remux (faststart, ~30s) | transcode (H.264 720p sidecar, ~realtime) | both"
+        required: false
+        type: choice
+        default: "remux"
+        options:
+          - none
+          - remux
+          - transcode
+          - both
 
 concurrency:
   group: download-${{ github.run_id }}
@@ -520,6 +530,135 @@ jobs:
             exit "$ytdlp_rc"
           fi
           ls -lah "$WORK"
+
+      - name: Make videos PWA-streamable (faststart remux + optional 720p sidecar)
+        if: steps.detect.outputs.mode == 'ytdlp' || steps.detect.outputs.mode == 'torrent' || steps.detect.outputs.mode == 'aria2'
+        env:
+          WORK: ${{ steps.workspace.outputs.dir }}
+          WEB_READY: ${{ inputs.web_ready }}
+        run: |
+          set -euo pipefail
+          mode="${WEB_READY:-remux}"
+          if [ "$mode" = "none" ]; then
+            echo "web_ready=none: skipping post-process"
+            exit 0
+          fi
+          cd "$WORK"
+          shopt -s nullglob nocaseglob
+
+          # Detect video files. We look at both extension and ffprobe to
+          # avoid touching audio/archives/etc. Sidecar files we ourselves
+          # produce (*.web.mp4 / *.lite.mp4) are skipped on re-runs.
+          videos=()
+          for f in *.mp4 *.mkv *.avi *.mov *.m4v *.webm *.ts; do
+            [ -f "$f" ] || continue
+            case "${f,,}" in
+              *.web.mp4|*.lite.mp4) continue ;;
+            esac
+            # Only treat it as video if ffprobe finds a video stream
+            if ffprobe -v error -select_streams v:0 -show_entries stream=codec_type \
+                 -of default=nw=1:nk=1 "$f" 2>/dev/null | grep -q '^video$'; then
+              videos+=("$f")
+            fi
+          done
+          if [ "${#videos[@]}" -eq 0 ]; then
+            echo "No video files to process."
+            exit 0
+          fi
+
+          {
+            echo "## Web-ready post-process"
+            echo ""
+            echo "Режим: \`$mode\`"
+            echo ""
+            echo "| Файл | Видео-кодек | Аудио-кодек | Размер | Действие |"
+            echo "| --- | --- | --- | ---: | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for f in "${videos[@]}"; do
+            vcodec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$f" 2>/dev/null || echo unknown)
+            acodec=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$f" 2>/dev/null || echo none)
+            ext="${f##*.}"; ext="${ext,,}"
+            sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
+            human=$(numfmt --to=iec --suffix=B "$sz")
+            base="${f%.*}"
+            action=""
+
+            web_friendly=false
+            if [ "$vcodec" = "h264" ] && { [ "$acodec" = "aac" ] || [ "$acodec" = "none" ]; } && [ "$ext" = "mp4" ]; then
+              web_friendly=true
+            fi
+
+            # 1. Remux pass — guarantees moov at the front. Always cheap.
+            if [ "$mode" = "remux" ] || [ "$mode" = "both" ]; then
+              if $web_friendly; then
+                # Same codec, same container — just move moov atom to the front.
+                tmp="$(mktemp -u --tmpdir=. "${base}.faststart.XXXX.mp4")"
+                if ffmpeg -hide_banner -loglevel warning -y -i "$f" -c copy -movflags +faststart "$tmp" 2>>/tmp/ffmpeg-web.err; then
+                  mv "$tmp" "$f"
+                  action="remux +faststart"
+                else
+                  rm -f "$tmp"
+                  action="remux failed (см. лог)"
+                fi
+              else
+                # Try a lossless container-only remux to mp4 (works for h264+aac in mkv).
+                if [ "$vcodec" = "h264" ] && { [ "$acodec" = "aac" ] || [ "$acodec" = "none" ]; }; then
+                  if ffmpeg -hide_banner -loglevel warning -y -i "$f" -c copy -movflags +faststart "${base}.web.mp4" 2>>/tmp/ffmpeg-web.err; then
+                    action="sidecar .web.mp4 (lossless remux)"
+                  else
+                    rm -f "${base}.web.mp4"
+                    action="remux failed"
+                  fi
+                else
+                  action="остался как есть (не H.264) → нужен transcode"
+                fi
+              fi
+            fi
+
+            # 2. Transcode pass — guarantees a universally-streamable mp4
+            # at 720p H.264 + AAC. Only run when the user asked for it,
+            # because this costs real CPU minutes on the runner.
+            if [ "$mode" = "transcode" ] || [ "$mode" = "both" ]; then
+              # If we just produced a web.mp4 via lossless remux, skip
+              # transcoding — that file is already web-streamable.
+              if [ -f "${base}.web.mp4" ] && [ "$mode" = "both" ]; then
+                action="$action; transcode skipped (есть lossless .web.mp4)"
+              elif $web_friendly && [ "$mode" = "transcode" ]; then
+                action="transcode skipped (исходник уже H.264 mp4 faststart)"
+              else
+                # 720p cap, AAC 128k, veryfast for predictable runtime.
+                if ffmpeg -hide_banner -loglevel warning -y -i "$f" \
+                     -vf "scale='min(1280,iw)':-2" \
+                     -c:v libx264 -preset veryfast -crf 23 \
+                     -profile:v main -level 4.0 \
+                     -pix_fmt yuv420p \
+                     -c:a aac -b:a 128k -ac 2 \
+                     -movflags +faststart \
+                     "${base}.web.mp4" 2>>/tmp/ffmpeg-web.err; then
+                  if [ -n "$action" ]; then action="$action; sidecar .web.mp4 (transcode 720p)"; else action="sidecar .web.mp4 (transcode 720p)"; fi
+                else
+                  rm -f "${base}.web.mp4"
+                  action="transcode failed (см. лог)"
+                fi
+              fi
+            fi
+
+            echo "| \`$f\` | \`$vcodec\` | \`$acodec\` | $human | $action |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          if [ -s /tmp/ffmpeg-web.err ]; then
+            {
+              echo ""
+              echo "<details><summary>ffmpeg stderr (последние 40 строк)</summary>"
+              echo ""
+              echo '```'
+              tail -n 40 /tmp/ffmpeg-web.err
+              echo '```'
+              echo ""
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Decrypt Widevine DRM (Kinopoisk)
         if: steps.detect.outputs.mode == 'ytdlp' && env.WIDEVINE_DECRYPTION_KEY != ''
