@@ -36,8 +36,6 @@ const defaultCfg = {
   driveOauthClientId: "",
   driveOauthClientSecret: "",
   driveOauthRefreshToken: "",
-  // Whether to auto-push the cfg blob to Drive on every "Сохранить" click.
-  accountAutoPush: false,
   // Tracker creds. Mirror what gets uploaded to GitHub Secrets so we can sync
   // them across devices and re-upload to Secrets on each new machine without
   // the user re-typing them.
@@ -504,25 +502,18 @@ async function uploadGitHubSecret(name, value) {
   return verified;
 }
 
-// ---------- Account sync via Google Drive ----------
+// ---------- Drive access via service-account JWT ----------
 //
-// We keep a JSON blob (`film-beamer-config.json`) inside the user's existing
-// Drive folder (the same one that GDRIVE_FOLDER_ID points at). The
-// service-account JSON the user pastes in Settings is the "account key": it
-// authenticates JWT-flow OAuth (RS256, signed in the browser via Web Crypto)
-// and gives the browser direct REST access to Drive. Per-device, the user
-// pastes SA + Folder once; everything else (repo, branch, PAT, trackers)
-// pulls down from the blob.
-
-const SYNC_FILENAME = "film-beamer-config.json";
+// Cross-device cfg sync is handled by SupabaseAuth (email+password →
+// Postgres). The Drive bits below are purely for the in-page player and
+// (legacy) GDRIVE_SERVICE_ACCOUNT secret upload.
+//
 // We bundle two scopes onto the same SA JWT:
-//   * `drive.file`     — needed for read/write of the sync config blob
-//                        (films-beamer creates and re-edits that file).
+//   * `drive.file`     — historical; lets the SA write files it created.
 //   * `drive.readonly` — needed for the in-page video player to list and
-//                        stream files that were uploaded by rclone using
-//                        the user's OAuth token (which the SA does not
-//                        own). The user must share the target Drive
-//                        folder with the SA email for this to work.
+//                        stream files that were uploaded by the user's
+//                        OAuth token. The user must share the target
+//                        Drive folder with the SA email for this to work.
 // Multiple scopes are space-separated per RFC 6749.
 const SYNC_SCOPES =
   "https://www.googleapis.com/auth/drive.file " +
@@ -608,10 +599,10 @@ async function refreshDriveOauthAccessToken() {
 }
 
 // In-flight de-duplication: while a JWT exchange is running, parallel
-// callers (validateDriveAccess, backupCfgToDrive, checkDrive,
-// findDriveCfgFile) get the same Promise. Otherwise three buttons clicked
-// in quick succession produce three identical OAuth requests and Google
-// starts replying with 429.
+// callers (validateDriveAccess, checkDrive, Player rehydrate) get the
+// same Promise. Otherwise three buttons clicked in quick succession
+// produce three identical OAuth requests and Google starts replying
+// with 429.
 let _driveAccessTokenInflight = null;
 async function getDriveAccessToken() {
   if (
@@ -698,146 +689,6 @@ async function getDriveAccessToken() {
   } finally {
     _driveAccessTokenInflight = null;
   }
-}
-
-async function findDriveCfgFile(token, folderId) {
-  const q = `name='${SYNC_FILENAME}' and '${folderId}' in parents and trashed=false`;
-  const url =
-    "https://www.googleapis.com/drive/v3/files?" +
-    new URLSearchParams({
-      q,
-      fields: "files(id,name,modifiedTime)",
-      pageSize: "10",
-    }).toString();
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Drive list ${res.status}: ${text}`);
-  }
-  const data = await res.json();
-  return data.files && data.files[0] ? data.files[0] : null;
-}
-
-async function uploadDriveCfg(token, folderId, content, fileId) {
-  // Multipart upload: metadata + content in one request.
-  const meta = fileId
-    ? { name: SYNC_FILENAME }
-    : { name: SYNC_FILENAME, parents: [folderId] };
-  const boundary = "-------film-beamer-" + Math.random().toString(16).slice(2);
-  const body =
-    `--${boundary}\r\n` +
-    "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
-    JSON.stringify(meta) +
-    `\r\n--${boundary}\r\n` +
-    "Content-Type: application/json\r\n\r\n" +
-    content +
-    `\r\n--${boundary}--`;
-  const url = fileId
-    ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`
-    : "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
-  const res = await fetch(url, {
-    method: fileId ? "PATCH" : "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": `multipart/related; boundary=${boundary}`,
-    },
-    body,
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Drive upload ${res.status}: ${text}`);
-  }
-  return res.json();
-}
-
-async function downloadDriveCfg(token, fileId) {
-  const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Drive download ${res.status}: ${text}`);
-  }
-  return res.text();
-}
-
-// Build the JSON blob that lives on Drive. We deliberately leave out the
-// per-device bootstrap creds (driveSaJson, driveFolderId, accountAutoPush)
-// so the user always types those by hand on a new device — that's the
-// "log in" step.
-function syncBlobFromCfg() {
-  return JSON.stringify(
-    {
-      version: 1,
-      saved_at: new Date().toISOString(),
-      cfg: {
-        repo: cfg.repo || "",
-        branch: cfg.branch || "",
-        workflow: cfg.workflow || "",
-        token: cfg.token || "",
-      },
-      trackers: cfg.trackers || {},
-    },
-    null,
-    2
-  );
-}
-
-function applySyncBlob(blob) {
-  let parsed;
-  try {
-    parsed = JSON.parse(blob);
-  } catch (err) {
-    throw new Error(`Файл sync некорректный: ${err.message}`);
-  }
-  if (!parsed || typeof parsed !== "object" || !parsed.cfg) {
-    throw new Error("В файле sync нет поля cfg.");
-  }
-  cfg.repo = parsed.cfg.repo || cfg.repo;
-  cfg.branch = parsed.cfg.branch || "";
-  cfg.workflow = parsed.cfg.workflow || cfg.workflow;
-  cfg.token = parsed.cfg.token || cfg.token;
-  if (parsed.trackers && typeof parsed.trackers === "object") {
-    cfg.trackers = { ...(cfg.trackers || {}), ...parsed.trackers };
-  }
-  saveCfg(cfg);
-}
-
-async function backupCfgToDrive() {
-  if (!cfg.driveFolderId) {
-    throw new Error(
-      "Не указан Folder ID — заполни в разделе «Загрузить ключ Google Drive»."
-    );
-  }
-  const token = await getDriveAccessToken();
-  const existing = await findDriveCfgFile(token, cfg.driveFolderId);
-  await uploadDriveCfg(
-    token,
-    cfg.driveFolderId,
-    syncBlobFromCfg(),
-    existing ? existing.id : null
-  );
-}
-
-async function restoreCfgFromDrive() {
-  if (!cfg.driveFolderId) {
-    throw new Error(
-      "Не указан Folder ID — заполни в разделе «Загрузить ключ Google Drive»."
-    );
-  }
-  const token = await getDriveAccessToken();
-  const existing = await findDriveCfgFile(token, cfg.driveFolderId);
-  if (!existing) {
-    throw new Error(
-      `На Drive в этой папке нет файла ${SYNC_FILENAME}. ` +
-        "Сначала с другого устройства нажми «Сохранить в Drive»."
-    );
-  }
-  const content = await downloadDriveCfg(token, existing.id);
-  applySyncBlob(content);
 }
 
 // Resolve the branch we should dispatch workflow_dispatch against.
@@ -947,9 +798,6 @@ function openSettings() {
     if (u && !u.value) u.value = cfg.trackers?.[t.id]?.user || "";
     if (p && !p.value) p.value = cfg.trackers?.[t.id]?.pass || "";
   }
-  const autoEl = $("#account-autopush");
-  if (autoEl) autoEl.checked = Boolean(cfg.accountAutoPush);
-  if (typeof updateAccountStatus === "function") updateAccountStatus();
 
   // Refresh the hint with whatever's already cached, then trigger an async
   // fetch in the background to populate it for the very first open.
@@ -1088,16 +936,15 @@ function bindSettings() {
         2500
       );
     }
-    // Preserve existing fields we don't expose in the main form (Drive creds,
-    // tracker creds, autopush). Those are managed by their own sections / by
-    // applySyncBlob — but we still want them in cfg.
+    // Preserve fields we don't expose in the main form (Drive creds,
+    // tracker creds). Those are managed by their own sections. Cross-device
+    // sync is handled by SupabaseAuth.schedulePush() inside saveCfg().
     cfg = {
       ...cfg,
       repo,
       branch: $("#cfg-branch").value.trim(),
       workflow: $("#cfg-workflow").value.trim() || "download-to-drive.yml",
       token,
-      accountAutoPush: $("#account-autopush")?.checked || false,
     };
     saveCfg(cfg);
     ensureRepoLink();
@@ -1105,18 +952,6 @@ function bindSettings() {
     toast("Сохранено.", "success");
     closeSettings();
     refreshRuns(true);
-    // If the user opted in, push the cfg blob up to Drive in the background.
-    if (
-      cfg.accountAutoPush &&
-      (hasOauthDriveCreds() || cfg.driveSaJson) &&
-      cfg.driveFolderId
-    ) {
-      backupCfgToDrive()
-        .then(() => toast("Синхронизировано с Drive.", "success", 2000))
-        .catch((err) =>
-          toast(`Drive sync не сработал: ${err.message || err}`, "error")
-        );
-    }
   });
 }
 
@@ -1641,7 +1476,6 @@ function bindDriveUpload() {
         driveFolderId: folderId || cfg.driveFolderId,
       };
       saveCfg(cfg);
-      if (typeof updateAccountStatus === "function") updateAccountStatus();
       jsonField.value = "";
       updateServiceAccountEmail();
     } catch (err) {
@@ -2228,35 +2062,12 @@ function bindDriveOAuthConnect() {
   });
 }
 
-// ---------- YouTube cookies uploader ----------
-// YouTube hardened bot detection in 2025 — cloud IPs (incl. GitHub Actions
-// runners) get the "Sign in to confirm you're not a bot" wall on most
-// videos. Letting users upload their cookies.txt as YT_COOKIES is the only
-// reliable workaround. We never persist this in localStorage / Drive sync.
-function setYtCookiesStatus(text, kind = "info") {
-  const el = $("#yt-cookies-status");
-  if (!el) return;
-  el.textContent = text || "";
-  el.classList.remove(
-    "hidden",
-    "text-slate-400",
-    "text-emerald-300",
-    "text-rose-300"
-  );
-  if (!text) {
-    el.classList.add("hidden");
-    return;
-  }
-  const cls =
-    kind === "success"
-      ? "text-emerald-300"
-      : kind === "error"
-      ? "text-rose-300"
-      : "text-slate-400";
-  el.classList.add(cls);
-  el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-}
-
+// ---------- Cookies helper ----------
+// YouTube hardened bot detection in 2025 — cloud IPs (incl. GitHub
+// Actions runners) get the "Sign in to confirm you're not a bot" wall
+// on most videos. yt-dlp accepts a Netscape-format cookies.txt as the
+// only reliable workaround. The Cookie Wizard below covers YouTube +
+// the supported trackers in one upload, so this validator is shared.
 function looksLikeNetscapeCookies(raw) {
   if (!raw) return false;
   const s = raw.trim();
@@ -2270,123 +2081,6 @@ function looksLikeNetscapeCookies(raw) {
   if (!nonComment.length) return false;
   // First non-comment line must split into >=6 tab-separated fields.
   return nonComment[0].split("\t").length >= 6;
-}
-
-function bindYtCookiesUpload() {
-  const btn = $("#yt-cookies-upload");
-  if (!btn) return;
-  const clearBtn = $("#yt-cookies-clear");
-  const field = $("#yt-cookies");
-  const fileInput = $("#yt-cookies-file");
-  const filePicker = $("#yt-cookies-pick");
-
-  filePicker.addEventListener("click", (e) => {
-    e.preventDefault();
-    fileInput.click();
-  });
-  fileInput.addEventListener("change", async () => {
-    const file = fileInput.files && fileInput.files[0];
-    if (!file) return;
-    try {
-      field.value = await file.text();
-    } catch (err) {
-      setYtCookiesStatus(
-        `Не удалось прочитать файл: ${err.message || err}`,
-        "error"
-      );
-    }
-  });
-
-  btn.addEventListener("click", async () => {
-    setYtCookiesStatus("");
-    if (!cfg.repo) {
-      setYtCookiesStatus("Сначала укажи репозиторий в Настройках выше.", "error");
-      return;
-    }
-    if (!cfg.token) {
-      setYtCookiesStatus(
-        "Сначала введи GitHub-токен выше и нажми «Сохранить».",
-        "error"
-      );
-      return;
-    }
-    const raw = field.value;
-    if (!raw || !raw.trim()) {
-      setYtCookiesStatus("Поле пустое — вставь содержимое cookies.txt.", "error");
-      return;
-    }
-    if (!looksLikeNetscapeCookies(raw)) {
-      setYtCookiesStatus(
-        "Это не похоже на cookies.txt в Netscape-формате. Экспортируй через расширение «Get cookies.txt LOCALLY» или «cookies.txt» (Firefox).",
-        "error"
-      );
-      return;
-    }
-
-    btn.disabled = true;
-    setYtCookiesStatus("Шифрую в браузере и отправляю…");
-    try {
-      const v = await uploadGitHubSecret("YT_COOKIES", raw);
-      setYtCookiesStatus(
-        `Записано в GitHub Secrets и подтверждено GET-ом: YT_COOKIES (обновлён ${formatSecretTs(
-          v
-        )}). На следующем запуске yt-dlp возьмёт куки из секрета.`,
-        "success"
-      );
-      toast("Куки YouTube загружены в GitHub.", "success");
-      // Wipe from the textarea so it doesn't sit in the DOM.
-      field.value = "";
-    } catch (err) {
-      const msg = err.message || String(err);
-      const hint = /\b403\b/.test(msg)
-        ? " У токена должно быть право «Secrets: Read and Write»."
-        : "";
-      setYtCookiesStatus(`Ошибка: ${msg}${hint}`, "error");
-    } finally {
-      btn.disabled = false;
-    }
-  });
-
-  clearBtn.addEventListener("click", async () => {
-    setYtCookiesStatus("");
-    if (!cfg.repo || !cfg.token) {
-      setYtCookiesStatus(
-        "Сначала укажи репо и GitHub-токен в Настройках выше.",
-        "error"
-      );
-      return;
-    }
-    if (!confirm("Удалить секрет YT_COOKIES из GitHub? yt-dlp снова станет ходить без авторизации.")) {
-      return;
-    }
-    clearBtn.disabled = true;
-    setYtCookiesStatus("Удаляю…");
-    try {
-      const [owner, repo] = cfg.repo.split("/");
-      const url = `https://api.github.com/repos/${owner}/${repo}/actions/secrets/YT_COOKIES`;
-      const res = await fetch(url, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${cfg.token}`,
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
-      });
-      if (res.status === 204) {
-        setYtCookiesStatus("Секрет YT_COOKIES удалён из GitHub.", "success");
-        toast("Секрет YT_COOKIES удалён.", "success");
-      } else if (res.status === 404) {
-        setYtCookiesStatus("Секрет YT_COOKIES уже не существует.", "info");
-      } else {
-        const txt = await res.text();
-        throw new Error(`HTTP ${res.status}: ${txt.slice(0, 200)}`);
-      }
-    } catch (err) {
-      setYtCookiesStatus(`Ошибка: ${err.message || err}`, "error");
-    } finally {
-      clearBtn.disabled = false;
-    }
-  });
 }
 
 // ---------- Cookie Wizard ----------
@@ -2981,13 +2675,6 @@ function bindTrackersUpload() {
       }
       cfg = { ...cfg, trackers };
       saveCfg(cfg);
-      if (
-        cfg.accountAutoPush &&
-        (hasOauthDriveCreds() || cfg.driveSaJson) &&
-        cfg.driveFolderId
-      ) {
-        backupCfgToDrive().catch(() => {});
-      }
       for (const t of TRACKER_FIELDS) {
         $(t.passInput).value = "";
       }
@@ -3551,106 +3238,6 @@ async function downloadResults(gh, runId) {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-// ---------- Account-sync UI ----------
-function updateAccountStatus() {
-  const el = $("#account-status");
-  if (!el) return;
-  if ((!hasOauthDriveCreds() && !cfg.driveSaJson) || !cfg.driveFolderId) {
-    el.textContent =
-      "Нажми «Подключить Google Drive» ниже и выдай доступ — это и есть «логин» аккаунта.";
-    el.className = "mt-3 text-xs text-amber-300";
-    return;
-  }
-  el.textContent = "Drive подключён. «Сохранить в Drive» отправит настройки в файл film-beamer-config.json.";
-  el.className = "mt-3 text-xs text-emerald-300";
-}
-
-function bindAccountSync() {
-  const pull = $("#account-pull");
-  const push = $("#account-push");
-  if (!pull || !push) return;
-
-  pull.addEventListener("click", async () => {
-    if ((!hasOauthDriveCreds() && !cfg.driveSaJson) || !cfg.driveFolderId) {
-      toast(
-        "Сначала нажми «Подключить Google Drive» ниже и укажи папку.",
-        "error"
-      );
-      return;
-    }
-    pull.disabled = true;
-    const old = pull.textContent;
-    pull.textContent = "Качаю…";
-    try {
-      await restoreCfgFromDrive();
-      // Re-render dialog from the freshly loaded cfg.
-      $("#cfg-repo").value = cfg.repo || "";
-      $("#cfg-branch").value = cfg.branch || "";
-      $("#cfg-workflow").value = cfg.workflow || "download-to-drive.yml";
-      $("#cfg-token").value = cfg.token || "";
-      for (const t of TRACKER_FIELDS) {
-        const u = $(t.userInput);
-        const p = $(t.passInput);
-        if (u) u.value = cfg.trackers?.[t.id]?.user || "";
-        if (p) p.value = cfg.trackers?.[t.id]?.pass || "";
-      }
-      ensureRepoLink();
-      showSetupHint(!isReady());
-      toast("Подгружено из Drive.", "success");
-    } catch (err) {
-      toast(`Не удалось: ${err.message || err}`, "error", 5000);
-    } finally {
-      pull.disabled = false;
-      pull.textContent = old;
-    }
-  });
-
-  push.addEventListener("click", async () => {
-    if ((!hasOauthDriveCreds() && !cfg.driveSaJson) || !cfg.driveFolderId) {
-      toast(
-        "Сначала нажми «Подключить Google Drive» ниже и укажи папку.",
-        "error"
-      );
-      return;
-    }
-    push.disabled = true;
-    const old = push.textContent;
-    push.textContent = "Сохраняю…";
-    try {
-      await backupCfgToDrive();
-      toast("Сохранено в Drive.", "success");
-    } catch (err) {
-      toast(`Не удалось: ${err.message || err}`, "error", 5000);
-    } finally {
-      push.disabled = false;
-      push.textContent = old;
-    }
-  });
-}
-
-// On startup, if we already have Drive auth (OAuth or SA) + folder
-// configured, transparently pull the latest cfg from Drive and apply
-// it. This is what makes the "log in from another device" flow
-// seamless: run the device-auth once (or paste SA JSON) and everything
-// else materialises.
-async function bootstrapAccountSync() {
-  if ((!hasOauthDriveCreds() && !cfg.driveSaJson) || !cfg.driveFolderId) {
-    return;
-  }
-  try {
-    const token = await getDriveAccessToken();
-    const existing = await findDriveCfgFile(token, cfg.driveFolderId);
-    if (!existing) return;
-    const content = await downloadDriveCfg(token, existing.id);
-    applySyncBlob(content);
-    ensureRepoLink();
-    showSetupHint(!isReady());
-    refreshRuns(true);
-  } catch (err) {
-    console.warn("bootstrapAccountSync:", err);
-  }
 }
 
 // ---------- Run progress modal ----------
@@ -5069,8 +4656,7 @@ const Diagnostics = (() => {
 const SecretsAudit = (() => {
   // Single source of truth: kept in sync with the secret names referenced
   // by the workflows in `.github/workflows/*.yml` and the uploaders in
-  // bindDriveUpload / bindYtCookiesUpload / bindTrackersUpload /
-  // uploadCookieBucket.
+  // bindDriveUpload / bindTrackersUpload / uploadCookieBucket.
   const KNOWN = [
     {
       name: "GDRIVE_SERVICE_ACCOUNT",
@@ -7618,8 +7204,9 @@ const HelpDialog = (() => {
 //
 // JSON dump of cfg (without secret-account keys redacted) so the user can
 // copy their setup between machines without having to re-paste 30 things in
-// Settings. Drive sync covers 90% of this need; this is a manual escape
-// hatch for "I want to email this to a friend" or "I'm switching browsers".
+// Settings. SupabaseAuth covers cross-device sync transparently once the
+// user signs in; this is a manual escape hatch for "I want to email this
+// to a friend" or "I'm switching browsers before signing up".
 const SettingsBackup = (() => {
   const REDACTED = ["token"];
   const PRIVATE = ["driveSaJson"];
@@ -9254,13 +8841,11 @@ document.addEventListener("DOMContentLoaded", () => {
   bindDriveUpload();
   bindDriveOAuthUpload();
   bindDriveOAuthConnect();
-  bindYtCookiesUpload();
   bindCookieWizard();
   bindTrackersUpload();
   bindSearch();
   bindUrlHint();
   bindQualityToggle();
-  bindAccountSync();
   bindProgressDialog();
   bindRefreshButton();
   bindKeyboardShortcuts();
@@ -9296,9 +8881,6 @@ document.addEventListener("DOMContentLoaded", () => {
   showSetupHint(!isReady());
   refreshRuns();
   startPolling();
-  // Try pulling the latest cfg from Drive once on boot. Silent on failure
-  // (e.g. SA not yet configured, network issue).
-  bootstrapAccountSync();
   // Wake the Supabase auth module: restore saved session, refresh tokens if
   // expired, then pull the user's cfg from Postgres. Best-effort — failures
   // are surfaced via toast inside the module but don't block boot.
