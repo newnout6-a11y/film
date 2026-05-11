@@ -24,7 +24,7 @@
 //     diagnostics in the page can show which SW is running.
 // =============================================================================
 
-const CACHE_VERSION = "film-beamer-v33-auto-stream";
+const CACHE_VERSION = "film-beamer-v34-account-reset";
 const CACHE_PREFIX = "film-beamer-";
 
 // Path prefix that the in-page player uses to fetch Drive video bytes via
@@ -357,6 +357,15 @@ self.addEventListener("message", (event) => {
     } else {
       driveTokens.delete("current");
     }
+    return;
+  }
+  if (data.type === "DRIVE_TOKEN_CLEAR") {
+    // Account boundary: the page just logged the user out (or signed in
+    // as someone else). Drop any cached Drive bearer so an in-flight
+    // /_drive_proxy/* request can't reuse the previous identity's
+    // token. The next playback attempt will trigger a fresh DRIVE_TOKEN
+    // push from the page.
+    driveTokens.clear();
     return;
   }
   if (data.type === "PURGE_CACHE") {

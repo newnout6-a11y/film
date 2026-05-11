@@ -20,20 +20,20 @@
     <meta name="application-name" content="Film Beamer" />
     <meta name="format-detection" content="telephone=no" />
 
-    <link rel="manifest" href="./manifest.webmanifest?v=32" />
+    <link rel="manifest" href="./manifest.webmanifest?v=34" />
     <link rel="icon" type="image/svg+xml" href="./icon.svg" />
     <link rel="apple-touch-icon" href="./icon.svg" />
     <!-- Pre-compiled Tailwind bundle (23 KB minified) replaces the 350 KB
          Tailwind Play CDN script. The config lives at /tailwind.config.js
          and the build is in scripts/build_tailwind.sh. -->
-    <link rel="preload" href="./tailwind.css?v=32" as="style" />
-    <link rel="preload" href="./style.css?v=32" as="style" />
-    <link rel="preload" href="./app.js?v=32" as="script" />
+    <link rel="preload" href="./tailwind.css?v=34" as="style" />
+    <link rel="preload" href="./style.css?v=34" as="style" />
+    <link rel="preload" href="./app.js?v=34" as="script" />
     <link rel="dns-prefetch" href="https://api.github.com" />
     <link rel="preconnect" href="https://api.github.com" crossorigin />
     <link rel="preconnect" href="https://knpthwdqolzzeotewuzj.supabase.co" crossorigin />
-    <link rel="stylesheet" href="./tailwind.css?v=32" />
-    <link rel="stylesheet" href="./style.css?v=32" />
+    <link rel="stylesheet" href="./tailwind.css?v=34" />
+    <link rel="stylesheet" href="./style.css?v=34" />
   </head>
   <body class="min-h-screen bg-ink-950 text-slate-100 antialiased font-sans selection:bg-accent-500/30">
     <div class="bg-grid pointer-events-none fixed inset-0 -z-10"></div>
@@ -182,6 +182,135 @@
           быстром канале и зальёт его на твой Google Drive — оттуда можно
           смотреть стримом, не загружая свой интернет.
         </p>
+      </section>
+
+      <!-- Onboarding guide: visible for brand-new users. Shows the 4-step
+           setup path with live ✓/· indicators. Dismissible. Re-appears
+           on sign-out so the next person at the browser also sees it. -->
+      <section id="onboarding-guide" class="mt-8 hidden">
+        <div class="glass rounded-2xl border border-emerald-400/20 bg-emerald-500/5 p-4 shadow-2xl shadow-emerald-500/10 backdrop-blur sm:p-5">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <h2 class="text-sm font-semibold uppercase tracking-wider text-emerald-200">
+                Как начать с нуля
+              </h2>
+              <p class="mt-1 text-xs text-slate-400">
+                Четыре шага. Дальше плеер и заброс будут работать сами.
+              </p>
+            </div>
+            <button
+              id="guide-dismiss"
+              type="button"
+              aria-label="Скрыть гайд"
+              class="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-300 hover:bg-white/10"
+            >
+              Скрыть
+            </button>
+          </div>
+          <ol class="mt-4 space-y-3">
+            <li
+              id="guide-step-1"
+              data-step-key="account"
+              class="flex flex-wrap items-start gap-3 rounded-xl border border-white/10 bg-ink-900/60 p-3 sm:flex-nowrap"
+            >
+              <span class="guide-status flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-white/15 bg-ink-950 text-xs font-bold text-slate-300">
+                1
+              </span>
+              <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-slate-100">
+                  Войди в аккаунт
+                </p>
+                <p class="mt-0.5 text-xs text-slate-400">
+                  Один email + пароль. Все настройки этой сессии сохранятся в
+                  облаке и подтянутся на других устройствах.
+                </p>
+              </div>
+              <button
+                type="button"
+                data-guide-action="open-login"
+                class="rounded-lg border border-emerald-400/40 bg-emerald-400/10 px-3 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-400/20"
+              >
+                Войти
+              </button>
+            </li>
+            <li
+              id="guide-step-2"
+              data-step-key="github"
+              class="flex flex-wrap items-start gap-3 rounded-xl border border-white/10 bg-ink-900/60 p-3 sm:flex-nowrap"
+            >
+              <span class="guide-status flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-white/15 bg-ink-950 text-xs font-bold text-slate-300">
+                2
+              </span>
+              <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-slate-100">
+                  Укажи репозиторий и GitHub-токен
+                </p>
+                <p class="mt-0.5 text-xs text-slate-400">
+                  Раннер живёт в твоём форке. Нужны
+                  <code class="rounded bg-white/5 px-1 py-0.5 text-[11px] text-slate-300">owner/repo</code>
+                  и PAT с правами Actions + Secrets.
+                </p>
+              </div>
+              <button
+                type="button"
+                data-guide-action="open-settings-github"
+                class="rounded-lg border border-emerald-400/40 bg-emerald-400/10 px-3 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-400/20"
+              >
+                Настроить
+              </button>
+            </li>
+            <li
+              id="guide-step-3"
+              data-step-key="drive"
+              class="flex flex-wrap items-start gap-3 rounded-xl border border-white/10 bg-ink-900/60 p-3 sm:flex-nowrap"
+            >
+              <span class="guide-status flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-white/15 bg-ink-950 text-xs font-bold text-slate-300">
+                3
+              </span>
+              <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-slate-100">
+                  Подключи Google Drive
+                </p>
+                <p class="mt-0.5 text-xs text-slate-400">
+                  Одно нажатие — Google спросит права. После этого и заброс, и
+                  плеер работают сами; сервис-аккаунт не нужен.
+                </p>
+              </div>
+              <button
+                type="button"
+                data-guide-action="open-settings-drive"
+                class="rounded-lg border border-emerald-400/40 bg-emerald-400/10 px-3 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-400/20"
+              >
+                Подключить
+              </button>
+            </li>
+            <li
+              id="guide-step-4"
+              data-step-key="beam"
+              class="flex flex-wrap items-start gap-3 rounded-xl border border-white/10 bg-ink-900/60 p-3 sm:flex-nowrap"
+            >
+              <span class="guide-status flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-white/15 bg-ink-950 text-xs font-bold text-slate-300">
+                4
+              </span>
+              <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-slate-100">
+                  Закинь первую ссылку
+                </p>
+                <p class="mt-0.5 text-xs text-slate-400">
+                  Вставь URL или magnet ниже, нажми «Закинуть на Drive». Раннер
+                  скачает и положит файл в твою папку Drive за пару минут.
+                </p>
+              </div>
+              <button
+                type="button"
+                data-guide-action="focus-url"
+                class="rounded-lg border border-emerald-400/40 bg-emerald-400/10 px-3 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-400/20"
+              >
+                К форме ↓
+              </button>
+            </li>
+          </ol>
+        </div>
       </section>
 
       <section class="mt-10">
@@ -2001,7 +2130,7 @@
       style="bottom: max(env(safe-area-inset-bottom), 1.5rem);"
     ></div>
 
-    <script src="./app.js?v=32"></script>
+    <script src="./app.js?v=34"></script>
     <script>
       // Service worker registration is handled inside app.js (registerServiceWorker)
       // so the page can detect updates and show the banner. We keep this stub
