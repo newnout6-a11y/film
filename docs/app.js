@@ -6,6 +6,15 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 const STORE_KEY = "film-beamer.cfg.v1";
 
+// ---- Supabase backend (cross-device login/password sync) ----
+// These are project-specific *public* values. The publishable key is
+// designed to ship in client code; RLS on `user_configs` is what protects
+// per-user data from other users with the same key.
+const SUPABASE_URL = "https://knpthwdqolzzeotewuzj.supabase.co";
+const SUPABASE_ANON_KEY =
+  "sb_publishable_dTrgRJzAb-CSa0z0GV3Tcg_B0L3J5OM";
+const SUPABASE_SESSION_KEY = "film-beamer.supabase.session.v1";
+
 const defaultCfg = {
   repo: "",
   // Empty branch = autodetect via GitHub API (default_branch).
@@ -79,6 +88,17 @@ function loadCfg() {
 
 function saveCfg(cfg) {
   localStorage.setItem(STORE_KEY, JSON.stringify(cfg));
+  // Best-effort cross-device sync. The guard handles both "module not yet
+  // defined" (early calls during bootstrap) and "user is in the middle of a
+  // pull from server" (don't echo it right back up). All errors are swallowed
+  // inside the module so localStorage persistence is never blocked.
+  if (
+    typeof SupabaseAuth !== "undefined" &&
+    SupabaseAuth.isLoggedIn() &&
+    !SupabaseAuth.isPulling()
+  ) {
+    SupabaseAuth.schedulePush();
+  }
 }
 
 function clearCfg() {
@@ -8179,6 +8199,530 @@ const Player = (() => {
   return { bind, refresh, connect, rehydrate };
 })();
 
+// ---------- Supabase auth (cross-device login/password) ----------
+//
+// Login/password account system backed by Supabase (managed Postgres + auth).
+// Without this module the project's only "cross-device" mechanism was
+// Drive-as-database (paste SA JSON on every new device), which is what
+// users found tedious. With it, the user signs up once and the whole `cfg`
+// (PAT, Drive creds, tracker creds, …) is mirrored into Postgres on every
+// `saveCfg` call; signing in on another device pulls the latest blob and
+// merges it in.
+//
+// Security model: anon/publishable key is public (ships in JS — that's by
+// design for Supabase). Row Level Security on `public.user_configs` makes
+// `auth.uid() = user_id` the only way to read/write a row, so even with
+// the public key in hand a stranger cannot see anyone else's config. The
+// access token (1h JWT) and refresh token (long-lived) live in
+// localStorage; the refresh token is rotated by Supabase on every use.
+//
+// Storage model: a single JSONB column. Conflicts (same field changed on
+// two devices between syncs) resolve by "server wins on next pull" — that
+// is, whoever pushed most recently. Good enough for a single-user PWA;
+// real CRDT/diff would be over-engineered here.
+const SupabaseAuth = (() => {
+  let _session = null;
+  let _pushTimer = null;
+  let _isPulling = false;
+  let _bound = false;
+
+  function _loadSession() {
+    try {
+      const raw = localStorage.getItem(SUPABASE_SESSION_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.access_token || !parsed.refresh_token) {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  function _saveSession(s) {
+    if (s) {
+      localStorage.setItem(SUPABASE_SESSION_KEY, JSON.stringify(s));
+    } else {
+      localStorage.removeItem(SUPABASE_SESSION_KEY);
+    }
+  }
+
+  function _setSession(data) {
+    if (!data || !data.access_token) {
+      _session = null;
+      _saveSession(null);
+      return;
+    }
+    const expiresAt =
+      data.expires_at ||
+      Math.floor(Date.now() / 1000) + (data.expires_in || 3600);
+    _session = {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token || _session?.refresh_token,
+      expires_at: expiresAt,
+      user: data.user || _session?.user || null,
+    };
+    _saveSession(_session);
+  }
+
+  function _isAccessExpired() {
+    if (!_session || !_session.expires_at) return true;
+    // Refresh ≥60s before expiry to avoid races with in-flight requests.
+    return Date.now() / 1000 >= _session.expires_at - 60;
+  }
+
+  async function _request(path, opts = {}) {
+    const url = path.startsWith("http") ? path : `${SUPABASE_URL}${path}`;
+    const headers = {
+      apikey: SUPABASE_ANON_KEY,
+      "Content-Type": "application/json",
+      ...(opts.headers || {}),
+    };
+    // Default to the current access token unless the caller explicitly
+    // opted out (e.g. the refresh endpoint, which must NOT carry the
+    // expired token — Supabase 400s the refresh otherwise).
+    if (
+      !("Authorization" in headers) &&
+      _session &&
+      _session.access_token
+    ) {
+      headers.Authorization = `Bearer ${_session.access_token}`;
+    }
+    if (!headers.Authorization) delete headers.Authorization;
+    const res = await fetch(url, { ...opts, headers });
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const body = await res.json();
+        detail =
+          body.msg ||
+          body.message ||
+          body.error_description ||
+          body.error ||
+          JSON.stringify(body);
+      } catch {
+        try {
+          detail = await res.text();
+        } catch {
+          /* noop */
+        }
+      }
+      const err = new Error(`Supabase ${res.status}: ${detail || "unknown"}`);
+      err.status = res.status;
+      err.detail = detail;
+      throw err;
+    }
+    if (res.status === 204) return null;
+    const text = await res.text();
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+
+  async function _refreshIfNeeded() {
+    if (!_session) return false;
+    if (!_isAccessExpired()) return true;
+    try {
+      const data = await _request("/auth/v1/token?grant_type=refresh_token", {
+        method: "POST",
+        body: JSON.stringify({ refresh_token: _session.refresh_token }),
+        // Refresh requests should NOT carry the (expired) access token.
+        headers: { Authorization: "" },
+      });
+      _setSession(data);
+      return true;
+    } catch (err) {
+      console.warn("SupabaseAuth: refresh failed", err);
+      _setSession(null);
+      _renderUI();
+      return false;
+    }
+  }
+
+  async function signUp(email, password) {
+    const data = await _request("/auth/v1/signup", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+    if (data && data.access_token) {
+      _setSession(data);
+      await _afterAuth();
+    } else if (data && data.session && data.session.access_token) {
+      _setSession({ ...data.session, user: data.user });
+      await _afterAuth();
+    }
+    return data;
+  }
+
+  async function signIn(email, password) {
+    const data = await _request("/auth/v1/token?grant_type=password", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+    _setSession(data);
+    await _afterAuth();
+    return data;
+  }
+
+  async function signOut() {
+    try {
+      if (_session) {
+        await _request("/auth/v1/logout?scope=local", { method: "POST" });
+      }
+    } catch (err) {
+      // 401 etc. — token already invalid; carry on, we'll clear locally.
+      console.warn("SupabaseAuth: server-side signOut failed", err);
+    }
+    _setSession(null);
+    _renderUI();
+  }
+
+  // Called after a successful sign-in / sign-up. Pulls the server config
+  // (if any) and either merges it locally or pushes the local config up
+  // (if the server is empty — preserves a brand-new user's setup).
+  async function _afterAuth() {
+    _renderUI();
+    await pull();
+  }
+
+  async function pull() {
+    if (!_session) return;
+    if (!(await _refreshIfNeeded())) return;
+    _isPulling = true;
+    try {
+      const userId = _session.user && _session.user.id;
+      if (!userId) {
+        // Fetch user record so we know our uid for the row filter.
+        const u = await _request("/auth/v1/user", { method: "GET" });
+        if (u && u.id) {
+          _session.user = u;
+          _saveSession(_session);
+        }
+      }
+      const uid = _session.user && _session.user.id;
+      if (!uid) return;
+      const rows = await _request(
+        `/rest/v1/user_configs?user_id=eq.${encodeURIComponent(
+          uid
+        )}&select=config_blob&limit=1`,
+        { method: "GET", headers: { Accept: "application/json" } }
+      );
+      const blob = rows && rows.length ? rows[0].config_blob : null;
+      if (blob && typeof blob === "object" && Object.keys(blob).length > 0) {
+        // Merge server-side cfg over local. Nested `trackers` needs explicit
+        // merge so we don't drop fields the server doesn't yet have.
+        const merged = { ...defaultCfg, ...cfg, ...blob };
+        if (blob.trackers) {
+          merged.trackers = {
+            ...(cfg.trackers || {}),
+            ...blob.trackers,
+          };
+        }
+        cfg = merged;
+        // saveCfg() is guarded — _isPulling=true prevents an echo push.
+        saveCfg(cfg);
+        _rehydrateUIFromCfg();
+        toast("Настройки подгружены с сервера.", "success", 3000);
+      } else {
+        // Server has nothing — push current local cfg so subsequent devices
+        // can pull it. _isPulling stays true while we're inside this
+        // function, so the push runs cleanly without triggering another
+        // round-trip via saveCfg().
+        _isPulling = false;
+        await push();
+        _isPulling = true;
+      }
+    } catch (err) {
+      console.warn("SupabaseAuth: pull failed", err);
+      const detail = String(err.detail || err.message || "");
+      if (
+        err.status === 404 ||
+        /relation .*user_configs.* does not exist/i.test(detail) ||
+        /404.*\bnot found\b/i.test(detail)
+      ) {
+        toast(
+          "В Supabase нет таблицы user_configs — открой SQL Editor и выполни SQL из чата.",
+          "error",
+          8000
+        );
+      } else if (err.status === 401) {
+        toast(
+          "Сессия Supabase истекла. Войди заново.",
+          "warn",
+          5000
+        );
+        _setSession(null);
+        _renderUI();
+      } else {
+        toast(`Не удалось подгрузить настройки: ${err.message}`, "error", 5000);
+      }
+    } finally {
+      _isPulling = false;
+    }
+  }
+
+  async function push() {
+    if (!_session) return;
+    if (!(await _refreshIfNeeded())) return;
+    try {
+      const uid = _session.user && _session.user.id;
+      if (!uid) return;
+      await _request("/rest/v1/user_configs", {
+        method: "POST",
+        headers: {
+          Prefer: "resolution=merge-duplicates,return=minimal",
+        },
+        body: JSON.stringify({
+          user_id: uid,
+          config_blob: { ...cfg },
+          updated_at: new Date().toISOString(),
+        }),
+      });
+    } catch (err) {
+      console.warn("SupabaseAuth: push failed", err);
+    }
+  }
+
+  function schedulePush() {
+    if (_pushTimer) clearTimeout(_pushTimer);
+    _pushTimer = setTimeout(() => {
+      _pushTimer = null;
+      push().catch(() => {});
+    }, 1000);
+  }
+
+  function isLoggedIn() {
+    return !!(_session && _session.user);
+  }
+
+  function isPulling() {
+    return _isPulling;
+  }
+
+  function email() {
+    return (_session && _session.user && _session.user.email) || "";
+  }
+
+  // ---------- UI ----------
+
+  function _renderUI() {
+    const pill = $("#account-pill");
+    const pillLabel = $("#account-pill-label");
+    if (pillLabel) {
+      pillLabel.textContent = isLoggedIn() ? email() : "Войти";
+    }
+    if (pill) {
+      pill.classList.toggle("border-emerald-400/30", isLoggedIn());
+      pill.classList.toggle("bg-emerald-500/10", isLoggedIn());
+      pill.classList.toggle("text-emerald-200", isLoggedIn());
+    }
+    // Close login modal if we just signed in.
+    if (isLoggedIn()) {
+      const modal = $("#login-dialog");
+      if (modal) modal.classList.add("hidden");
+    }
+    // Show/hide sign-out tab content.
+    const signoutSection = $("#login-signedin-section");
+    const tabsRow = $("#login-tabs-row");
+    if (signoutSection) signoutSection.classList.toggle("hidden", !isLoggedIn());
+    if (tabsRow) tabsRow.classList.toggle("hidden", isLoggedIn());
+    const signedInEmail = $("#login-signedin-email");
+    if (signedInEmail) signedInEmail.textContent = email() || "—";
+    const signinForm = $("#login-signin-form");
+    const signupForm = $("#login-signup-form");
+    if (isLoggedIn()) {
+      if (signinForm) signinForm.classList.add("hidden");
+      if (signupForm) signupForm.classList.add("hidden");
+    }
+  }
+
+  function _rehydrateUIFromCfg() {
+    // Mirror the rehydrate that openSettings does so the user sees their
+    // newly-pulled config without having to open Settings manually.
+    const set = (id, val) => {
+      const el = $(id);
+      if (el) el.value = val || "";
+    };
+    set("#cfg-repo", cfg.repo);
+    set("#cfg-branch", cfg.branch);
+    set("#cfg-workflow", cfg.workflow || "download-to-drive.yml");
+    set("#cfg-token", cfg.token);
+    set("#drive-json", cfg.driveSaJson);
+    set("#drive-folder", cfg.driveFolderId);
+    if (Array.isArray(window.TRACKER_FIELDS_PUBLIC)) {
+      // No-op placeholder for future use.
+    }
+    // TRACKER_FIELDS is in module scope; access through window if exposed,
+    // else rely on the next openSettings() to repopulate.
+    try {
+      if (typeof TRACKER_FIELDS !== "undefined") {
+        for (const t of TRACKER_FIELDS) {
+          const u = $(t.userInput);
+          const p = $(t.passInput);
+          if (u) u.value = (cfg.trackers && cfg.trackers[t.id]?.user) || "";
+          if (p) p.value = (cfg.trackers && cfg.trackers[t.id]?.pass || "");
+        }
+      }
+    } catch {
+      /* TRACKER_FIELDS may not be in scope yet; openSettings() will redo it */
+    }
+    try {
+      ensureRepoLink();
+    } catch {
+      /* noop */
+    }
+    try {
+      showSetupHint(!isReady());
+    } catch {
+      /* noop */
+    }
+  }
+
+  function _switchTab(name) {
+    const tabs = $$(".login-tab");
+    for (const t of tabs) {
+      const active = t.dataset.tab === name;
+      t.classList.toggle("bg-accent-500/20", active);
+      t.classList.toggle("text-accent-100", active);
+      t.classList.toggle("text-slate-300", !active);
+    }
+    const sf = $("#login-signin-form");
+    const uf = $("#login-signup-form");
+    if (sf) sf.classList.toggle("hidden", name !== "signin");
+    if (uf) uf.classList.toggle("hidden", name !== "signup");
+    const err = $("#login-error");
+    if (err) err.textContent = "";
+  }
+
+  function _bind() {
+    if (_bound) return;
+    _bound = true;
+    const dlg = $("#login-dialog");
+    const open = $("#account-pill");
+    const close = $("#login-close");
+    const signinBtn = $("#login-signin-btn");
+    const signupBtn = $("#login-signup-btn");
+    const signoutBtn = $("#login-signout-btn");
+    const errEl = $("#login-error");
+
+    function openDialog() {
+      if (!dlg) return;
+      dlg.classList.remove("hidden");
+      if (!isLoggedIn()) _switchTab("signin");
+      if (errEl) errEl.textContent = "";
+    }
+    function closeDialog() {
+      if (dlg) dlg.classList.add("hidden");
+    }
+
+    open?.addEventListener("click", openDialog);
+    close?.addEventListener("click", closeDialog);
+    dlg?.addEventListener("click", (e) => {
+      if (e.target === dlg) closeDialog();
+    });
+    for (const t of $$(".login-tab")) {
+      t.addEventListener("click", () => _switchTab(t.dataset.tab));
+    }
+    signinBtn?.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const emailVal = ($("#login-signin-email")?.value || "").trim();
+      const passVal = $("#login-signin-password")?.value || "";
+      if (!emailVal || !passVal) {
+        if (errEl) errEl.textContent = "Email и пароль не должны быть пустыми.";
+        return;
+      }
+      signinBtn.disabled = true;
+      try {
+        if (errEl) errEl.textContent = "";
+        await signIn(emailVal, passVal);
+        toast(`Привет, ${emailVal}!`, "success");
+        closeDialog();
+      } catch (err) {
+        if (errEl) errEl.textContent = err.message || String(err);
+      } finally {
+        signinBtn.disabled = false;
+      }
+    });
+    signupBtn?.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const emailVal = ($("#login-signup-email")?.value || "").trim();
+      const passVal = $("#login-signup-password")?.value || "";
+      if (!emailVal || passVal.length < 6) {
+        if (errEl)
+          errEl.textContent = "Email обязателен, пароль — минимум 6 символов.";
+        return;
+      }
+      signupBtn.disabled = true;
+      try {
+        if (errEl) errEl.textContent = "";
+        await signUp(emailVal, passVal);
+        if (isLoggedIn()) {
+          toast(
+            "Аккаунт создан. Настройки сохранены на сервер.",
+            "success",
+            4000
+          );
+          closeDialog();
+        } else {
+          if (errEl)
+            errEl.textContent =
+              "Проверь почту и подтверди email — мы прислали письмо.";
+        }
+      } catch (err) {
+        if (errEl) errEl.textContent = err.message || String(err);
+      } finally {
+        signupBtn.disabled = false;
+      }
+    });
+    signoutBtn?.addEventListener("click", async () => {
+      signoutBtn.disabled = true;
+      try {
+        await signOut();
+        toast("Вышел из аккаунта.", "info");
+        closeDialog();
+      } finally {
+        signoutBtn.disabled = false;
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && dlg && !dlg.classList.contains("hidden")) {
+        closeDialog();
+      }
+    });
+  }
+
+  async function init() {
+    _session = _loadSession();
+    _bind();
+    _renderUI();
+    if (_session) {
+      const ok = await _refreshIfNeeded();
+      if (ok) {
+        await pull();
+      } else {
+        _renderUI();
+      }
+    }
+  }
+
+  return {
+    init,
+    signUp,
+    signIn,
+    signOut,
+    pull,
+    push,
+    schedulePush,
+    isLoggedIn,
+    isPulling,
+    email,
+  };
+})();
+
 // ---------- bootstrap ----------
 document.addEventListener("DOMContentLoaded", () => {
   // Apply the user's saved theme as early as possible, before the rest of
@@ -8246,6 +8790,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // Try pulling the latest cfg from Drive once on boot. Silent on failure
   // (e.g. SA not yet configured, network issue).
   bootstrapAccountSync();
+  // Wake the Supabase auth module: restore saved session, refresh tokens if
+  // expired, then pull the user's cfg from Postgres. Best-effort — failures
+  // are surfaced via toast inside the module but don't block boot.
+  SupabaseAuth.init().catch((err) => {
+    console.warn("SupabaseAuth.init:", err);
+  });
   // Apply ?url=... and friends, then resume tracking a previously dispatched
   // run if there was one. resumeActiveRun() needs both repo + token in cfg
   // — isReady() guards against the post-clearCfg() case where the listing

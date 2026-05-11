@@ -20,19 +20,20 @@
     <meta name="application-name" content="Film Beamer" />
     <meta name="format-detection" content="telephone=no" />
 
-    <link rel="manifest" href="./manifest.webmanifest?v=30" />
+    <link rel="manifest" href="./manifest.webmanifest?v=32" />
     <link rel="icon" type="image/svg+xml" href="./icon.svg" />
     <link rel="apple-touch-icon" href="./icon.svg" />
     <!-- Pre-compiled Tailwind bundle (23 KB minified) replaces the 350 KB
          Tailwind Play CDN script. The config lives at /tailwind.config.js
          and the build is in scripts/build_tailwind.sh. -->
-    <link rel="preload" href="./tailwind.css?v=30" as="style" />
-    <link rel="preload" href="./style.css?v=30" as="style" />
-    <link rel="preload" href="./app.js?v=30" as="script" />
+    <link rel="preload" href="./tailwind.css?v=32" as="style" />
+    <link rel="preload" href="./style.css?v=32" as="style" />
+    <link rel="preload" href="./app.js?v=32" as="script" />
     <link rel="dns-prefetch" href="https://api.github.com" />
     <link rel="preconnect" href="https://api.github.com" crossorigin />
-    <link rel="stylesheet" href="./tailwind.css?v=30" />
-    <link rel="stylesheet" href="./style.css?v=30" />
+    <link rel="preconnect" href="https://knpthwdqolzzeotewuzj.supabase.co" crossorigin />
+    <link rel="stylesheet" href="./tailwind.css?v=32" />
+    <link rel="stylesheet" href="./style.css?v=32" />
   </head>
   <body class="min-h-screen bg-ink-950 text-slate-100 antialiased font-sans selection:bg-accent-500/30">
     <div class="bg-grid pointer-events-none fixed inset-0 -z-10"></div>
@@ -143,6 +144,15 @@
         >
           <span class="sm:hidden">🩺</span>
           <span class="hidden sm:inline">Диагностика</span>
+        </button>
+        <button
+          id="account-pill"
+          aria-label="Аккаунт"
+          title="Войти / создать аккаунт. Настройки будут на всех твоих устройствах."
+          class="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+        >
+          <span class="sm:hidden">👤</span>
+          <span id="account-pill-label" class="hidden max-w-[10rem] truncate sm:inline">Войти</span>
         </button>
         <button
           id="settings-btn"
@@ -1863,6 +1873,127 @@
       </div>
     </div>
 
+    <!-- Login / account dialog -->
+    <div
+      id="login-dialog"
+      class="fixed inset-0 z-[55] hidden overflow-y-auto overscroll-contain bg-black/60 backdrop-blur"
+    >
+      <div class="flex min-h-full items-start justify-center p-4 sm:items-center sm:p-6">
+        <div class="glass my-4 w-full max-w-sm rounded-2xl border border-white/10 bg-ink-800/90 p-6 shadow-2xl">
+          <div class="flex items-start justify-between">
+            <div>
+              <h3 class="text-lg font-semibold">Аккаунт</h3>
+              <p class="mt-1 text-xs text-slate-400">
+                Войди, чтобы настройки синхронизировались на всех твоих устройствах через Supabase.
+              </p>
+            </div>
+            <button
+              id="login-close"
+              class="rounded-lg p-1.5 text-slate-400 hover:bg-white/5"
+              aria-label="Закрыть"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div id="login-tabs-row" class="mt-5 grid grid-cols-2 gap-1 rounded-xl border border-white/10 bg-ink-900 p-1 text-xs">
+            <button
+              type="button"
+              data-tab="signin"
+              class="login-tab rounded-lg px-3 py-2 font-medium text-accent-100 bg-accent-500/20"
+            >
+              Войти
+            </button>
+            <button
+              type="button"
+              data-tab="signup"
+              class="login-tab rounded-lg px-3 py-2 font-medium text-slate-300"
+            >
+              Регистрация
+            </button>
+          </div>
+
+          <form id="login-signin-form" class="mt-4 space-y-3" autocomplete="on">
+            <label class="block">
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Email</span>
+              <input
+                id="login-signin-email"
+                type="email"
+                autocomplete="email"
+                inputmode="email"
+                class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              />
+            </label>
+            <label class="block">
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Пароль</span>
+              <input
+                id="login-signin-password"
+                type="password"
+                autocomplete="current-password"
+                class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              />
+            </label>
+            <button
+              id="login-signin-btn"
+              type="submit"
+              class="w-full rounded-xl bg-gradient-to-r from-accent-500 to-fuchsia-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-accent-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Войти
+            </button>
+          </form>
+
+          <form id="login-signup-form" class="mt-4 hidden space-y-3" autocomplete="on">
+            <label class="block">
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Email</span>
+              <input
+                id="login-signup-email"
+                type="email"
+                autocomplete="email"
+                inputmode="email"
+                class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              />
+            </label>
+            <label class="block">
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Пароль (≥ 6 символов)</span>
+              <input
+                id="login-signup-password"
+                type="password"
+                autocomplete="new-password"
+                minlength="6"
+                class="mt-2 w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+              />
+            </label>
+            <button
+              id="login-signup-btn"
+              type="submit"
+              class="w-full rounded-xl bg-gradient-to-r from-accent-500 to-fuchsia-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-accent-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Создать аккаунт
+            </button>
+            <p class="text-[11px] text-slate-500">
+              Создавая аккаунт, ты соглашаешься, что твои настройки (включая GitHub-токен и ключ Drive) будут храниться в Supabase-проекте этого приложения. Доступ к строке базы — только у тебя (RLS по <code class="rounded bg-ink-900 px-1">auth.uid()</code>).
+            </p>
+          </form>
+
+          <div id="login-signedin-section" class="mt-4 hidden">
+            <div class="rounded-xl border border-emerald-400/30 bg-emerald-500/10 p-3">
+              <p class="text-xs text-emerald-200">Вошёл как <span id="login-signedin-email" class="font-mono">—</span>.</p>
+              <p class="mt-1 text-[11px] text-emerald-300/70">Настройки автоматически сохраняются на сервер при каждом изменении.</p>
+            </div>
+            <button
+              id="login-signout-btn"
+              type="button"
+              class="mt-3 w-full rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Выйти
+            </button>
+          </div>
+
+          <p id="login-error" class="mt-3 text-xs text-rose-300"></p>
+        </div>
+      </div>
+    </div>
+
     <!-- Toasts -->
     <div
       id="toasts"
@@ -1870,7 +2001,7 @@
       style="bottom: max(env(safe-area-inset-bottom), 1.5rem);"
     ></div>
 
-    <script src="./app.js?v=30"></script>
+    <script src="./app.js?v=32"></script>
     <script>
       // Service worker registration is handled inside app.js (registerServiceWorker)
       // so the page can detect updates and show the banner. We keep this stub
